@@ -114,6 +114,9 @@ html, body {
   background-color: var(--surface-hover) !important;
   color: var(--brand-red) !important;
 }
+.leaflet-bottom.leaflet-right {
+  margin-bottom: 40px !important;
+}
 .leaflet-control-attribution {
   background: rgba(11, 12, 16, 0.7) !important;
   color: var(--text-secondary) !important;

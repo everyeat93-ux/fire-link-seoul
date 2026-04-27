@@ -28,6 +28,9 @@ interface BuildingRecord {
   photo2_x?: number;
   photo2_y?: number;
   field_note?: string;
+  // Actual file paths in storage
+  photo1_path?: string;
+  photo2_path?: string;
 }
 
 interface SelectedLocation extends BuildingRecord {
@@ -108,14 +111,15 @@ function ImageWithCircle({ src, circle, onCircleSet, isEditing, label }: { src: 
           ref={canvasRef}
           width={400}
           height={300}
-          onClick={handleInteraction}
-          onTouchStart={handleInteraction}
+          onClick={(e) => isEditing && handleInteraction(e)}
+          onTouchStart={(e) => isEditing && handleInteraction(e)}
           style={{
             position: 'absolute',
             top: 0, left: 0,
             width: '100%', height: '100%',
             cursor: isEditing ? 'crosshair' : 'default',
-            touchAction: 'none',
+            touchAction: isEditing ? 'none' : 'auto', // Allow scroll when not editing
+            pointerEvents: isEditing ? 'auto' : 'none', // Critical: pass touches to parent for scrolling
             zIndex: 10
           }}
         />
@@ -177,7 +181,7 @@ function LocateControl() {
       }}
       style={{
         position: 'absolute',
-        bottom: '90px', // Positioned above the Leaflet zoom control
+        bottom: '130px', // Positioned higher to avoid mobile browser bottom bar
         right: '10px',
         zIndex: 1000,
         width: '34px',
@@ -315,9 +319,14 @@ export default function MapComponent() {
           console.error('Database record error:', dbErr);
         }
 
-        // Construct storage URLs
-        const photo1_url = alreadyHasPhotos ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/building-photos/${bldId}_1.jpg?t=${Date.now()}` : null;
-        const photo2_url = alreadyHasPhotos ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/building-photos/${bldId}_2.jpg?t=${Date.now()}` : null;
+        // Construct storage URLs using actual saved file paths (handles any extension)
+        const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
+        const buildPhotoUrl = (path: string | undefined | null) => {
+          if (!path) return null;
+          return `${baseUrl}/storage/v1/object/public/building-photos/${path}?t=${Date.now()}`;
+        };
+        const photo1_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo1_path) : null;
+        const photo2_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo2_path) : null;
 
         setSelectedLocation({
           id: bldId, 
@@ -335,6 +344,8 @@ export default function MapComponent() {
           photo1_y: existingData?.photo1_y,
           photo2_x: existingData?.photo2_x,
           photo2_y: existingData?.photo2_y,
+          photo1_path: existingData?.photo1_path,
+          photo2_path: existingData?.photo2_path,
           // 원본 정보 백업
           originalName: existingData?.name || bldName || '이름 없는 건물',
           originalAddress: existingData?.address || bldAddr || '주소 정보 없음'
@@ -704,10 +715,14 @@ export default function MapComponent() {
           zIndex: 1000,
           transition: 'bottom 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
           padding: '24px',
+          paddingBottom: 'calc(48px + env(safe-area-inset-bottom, 20px))',
           borderTopLeftRadius: '24px',
           borderTopRightRadius: '24px',
-          maxHeight: '80vh',
+          maxHeight: '85vh',
           overflowY: 'auto',
+          WebkitOverflowScrolling: 'touch',
+          touchAction: 'pan-y',
+          overscrollBehavior: 'contain',
           boxShadow: '0 -10px 40px rgba(0,0,0,0.5)'
         }}
       >
@@ -830,38 +845,49 @@ export default function MapComponent() {
                   <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 500 }}>
                     {isEditingCircles ? '사진을 터치하여 송수구 위치를 지정하세요' : '연결송수관 위치가 표시된 사진입니다'}
                   </div>
-                  <button 
-                    className={isEditingCircles ? "btn-primary" : "btn-secondary"}
-                    style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px' }}
-                    onClick={async () => {
-                      if (isEditingCircles) {
-                        // 저장 로직
-                        try {
-                          if (!selectedLocation) return;
-                          const { error } = await supabase
-                            .from('buildings')
-                            .update({
-                              photo1_x: p1Circle?.x,
-                              photo1_y: p1Circle?.y,
-                              photo2_x: p2Circle?.x,
-                              photo2_y: p2Circle?.y
-                            })
-                            .eq('id', selectedLocation.id);
-                          
-                          if (error) throw error;
-                          setIsEditingCircles(false);
-                          fetchRegistry();
-                        } catch (error) {
-                          console.error(error);
-                          alert('위치 정보 저장 실패');
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {!isEditingCircles && (
+                      <button 
+                        className="btn-secondary"
+                        style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px', backgroundColor: 'rgba(255,255,255,0.05)' }}
+                        onClick={() => setShowUploadModal(true)}
+                      >
+                        사진 재등록
+                      </button>
+                    )}
+                    <button 
+                      className={isEditingCircles ? "btn-primary" : "btn-secondary"}
+                      style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px' }}
+                      onClick={async () => {
+                        if (isEditingCircles) {
+                          // 저장 로직
+                          try {
+                            if (!selectedLocation) return;
+                            const { error } = await supabase
+                              .from('buildings')
+                              .update({
+                                photo1_x: p1Circle?.x,
+                                photo1_y: p1Circle?.y,
+                                photo2_x: p2Circle?.x,
+                                photo2_y: p2Circle?.y
+                              })
+                              .eq('id', selectedLocation.id);
+                            
+                            if (error) throw error;
+                            setIsEditingCircles(false);
+                            fetchRegistry();
+                          } catch (error) {
+                            console.error(error);
+                            alert('위치 정보 저장 실패');
+                          }
+                        } else {
+                          setIsEditingCircles(true);
                         }
-                      } else {
-                        setIsEditingCircles(true);
-                      }
-                    }}
-                  >
-                    {isEditingCircles ? '위치 저장 완료' : '위치 수정'}
-                  </button>
+                      }}
+                    >
+                      {isEditingCircles ? '위치 저장 완료' : '위치 수정'}
+                    </button>
+                  </div>
                 </div>
 
                 {/* ── 사진 수직 배치 ── */}
@@ -988,22 +1014,55 @@ export default function MapComponent() {
                 onClick={async () => {
                   if (!selectedLocation || !photo1 || !photo2) return;
 
-                  const { error } = await supabase
-                    .from('buildings')
-                    .update({
+                  try {
+                    // 파일 확장자를 보존하여 실제 파일 업로드
+                    const ext1 = photo1.name.split('.').pop()?.toLowerCase() || 'jpg';
+                    const ext2 = photo2.name.split('.').pop()?.toLowerCase() || 'jpg';
+                    const path1 = `${selectedLocation.id}_1.${ext1}`;
+                    const path2 = `${selectedLocation.id}_2.${ext2}`;
+
+                    // Supabase Storage에 실제 파일 업로드 (upsert: 기존 파일 덮어쓰기)
+                    const [upload1, upload2] = await Promise.all([
+                      supabase.storage.from('building-photos').upload(path1, photo1, { upsert: true, contentType: photo1.type || `image/${ext1}` }),
+                      supabase.storage.from('building-photos').upload(path2, photo2, { upsert: true, contentType: photo2.type || `image/${ext2}` }),
+                    ]);
+
+                    if (upload1.error) throw new Error('사진1 업로드 실패: ' + upload1.error.message);
+                    if (upload2.error) throw new Error('사진2 업로드 실패: ' + upload2.error.message);
+
+                    // DB에 파일 경로 및 메타데이터 저장
+                    const { error: dbError } = await supabase
+                      .from('buildings')
+                      .update({
+                        has_photos: true,
+                        field_note: fieldNote,
+                        registered_at: new Date().toISOString(),
+                        photo1_path: path1,
+                        photo2_path: path2,
+                      })
+                      .eq('id', selectedLocation.id);
+
+                    if (dbError) throw new Error('정보 저장 실패: ' + dbError.message);
+
+                    // 로컬 상태 업데이트 (즉시 사진 표시)
+                    const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
+                    const ts = Date.now();
+                    setSelectedLocation((prev: any) => prev ? {
+                      ...prev,
                       has_photos: true,
                       field_note: fieldNote,
-                      registered_at: new Date().toISOString()
-                    })
-                    .eq('id', selectedLocation.id);
+                      photo1_path: path1,
+                      photo2_path: path2,
+                      photo1_url: `${baseUrl}/storage/v1/object/public/building-photos/${path1}?t=${ts}`,
+                      photo2_url: `${baseUrl}/storage/v1/object/public/building-photos/${path2}?t=${ts}`,
+                    } : prev);
 
-                  if (!error) {
-                    setSelectedLocation((prev: any) => prev ? { ...prev, has_photos: true, field_note: fieldNote } : prev);
                     setPhoto1(null); setPhoto2(null); setFieldNote('');
                     setShowUploadModal(false);
                     fetchRegistry();
-                  } else {
-                    alert('등록 실패: ' + error.message);
+                  } catch (err: any) {
+                    console.error('Upload error:', err);
+                    alert('업로드 실패: ' + (err.message || '알 수 없는 오류'));
                   }
                 }}>
                 데이터 등록하기 {(!photo1 || !photo2) ? '(사진 2장 필수)' : ''}

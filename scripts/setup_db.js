@@ -32,6 +32,15 @@ begin
     alter table buildings add column visited_at timestamptz default now();
     alter table buildings add column device_id text;
   end if;
+  if not exists (select 1 from information_schema.columns where table_name='buildings' and column_name='registered_at') then
+    alter table buildings add column registered_at timestamptz;
+    alter table buildings add column edited_by text;
+    alter table buildings add column edited_at timestamptz;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name='buildings' and column_name='photo1_path') then
+    alter table buildings add column photo1_path text;
+    alter table buildings add column photo2_path text;
+  end if;
 end $$;
 
 -- 3. 보안 정책 설정
