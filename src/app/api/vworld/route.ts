@@ -14,8 +14,13 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'API Key is missing. Please add VWORLD_API_KEY to .env.local' }, { status: 500 });
   }
 
+  // Get the host from the request headers to match V-World domain registration
+  const host = request.headers.get('host') || 'firelinkseoul.vercel.app';
+  const protocol = host.includes('localhost') ? 'http' : 'https';
+  const domain = `${protocol}://${host}`;
+
   // V-World Data API URL for fetching building information by point intersection
-  const url = `https://api.vworld.kr/req/data?service=data&request=GetFeature&data=lt_c_bldginfo&key=${key}&domain=http://localhost:3000&geomFilter=point(${lng} ${lat})&crs=EPSG:4326&format=json`;
+  const url = `https://api.vworld.kr/req/data?service=data&request=GetFeature&data=lt_c_bldginfo&key=${key}&domain=${domain}&geomFilter=point(${lng} ${lat})&crs=EPSG:4326&format=json`;
   
   try {
     const res = await fetch(url);

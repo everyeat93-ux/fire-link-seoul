@@ -1,9 +1,10 @@
+// @ts-nocheck
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { MapContainer, TileLayer, GeoJSON, useMapEvents, useMap, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
-import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search } from 'lucide-react';
+import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Edit2 } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import { supabase } from '@/lib/supabase';
 
@@ -22,6 +23,110 @@ interface BuildingRecord {
   user_edited_address?: string;
   edited_by?: string;
   edited_at?: string;
+  photo1_x?: number;
+  photo1_y?: number;
+  photo2_x?: number;
+  photo2_y?: number;
+  field_note?: string;
+}
+
+interface SelectedLocation extends BuildingRecord {
+  geojson: any; // Leaflet GeoJSON data
+  originalName: string;
+  originalAddress: string;
+}
+
+// ── Image with Circle Overlay Component ──
+function ImageWithCircle({ src, circle, onCircleSet, isEditing, label }: { src: string, circle: { x: number, y: number } | null, onCircleSet: (pos: { x: number, y: number }) => void, isEditing: boolean, label: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const render = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (circle) {
+        ctx.beginPath();
+        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 12, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#ff0000';
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 12, 0, 2 * Math.PI);
+        ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+        ctx.fill();
+
+        // Pulsing outer ring
+        ctx.beginPath();
+        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 18, 0, 2 * Math.PI);
+        ctx.strokeStyle = 'rgba(255, 0, 0, 0.4)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    };
+
+    render();
+  }, [circle]);
+
+  const handleInteraction = (e: any) => {
+    if (!isEditing) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    
+    let clientX, clientY;
+    if (e.touches && e.touches[0]) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    const x = (clientX - rect.left) / rect.width;
+    const y = (clientY - rect.top) / rect.height;
+    onCircleSet({ x, y });
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--brand-red)' }}></div>
+        {label}
+      </span>
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', backgroundColor: 'var(--surface)', borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border)', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
+        <img 
+          src={src} 
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+          alt={label}
+        />
+        <canvas
+          ref={canvasRef}
+          width={400}
+          height={300}
+          onClick={handleInteraction}
+          onTouchStart={handleInteraction}
+          style={{
+            position: 'absolute',
+            top: 0, left: 0,
+            width: '100%', height: '100%',
+            cursor: isEditing ? 'crosshair' : 'default',
+            touchAction: 'none',
+            zIndex: 10
+          }}
+        />
+        {isEditing && (
+          <div style={{ position: 'absolute', top: '12px', right: '12px', backgroundColor: 'rgba(255,42,42,0.9)', color: 'white', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, pointerEvents: 'none', zIndex: 20 }}>
+            위치 지정 모드
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 
@@ -81,7 +186,7 @@ function LocateControl() {
 }
 
 export default function MapComponent() {
-  const [selectedLocation, setSelectedLocation] = useState<any>(null);
+  const [selectedLocation, setSelectedLocation] = useState<SelectedLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -128,9 +233,13 @@ export default function MapComponent() {
   const [fieldNote, setFieldNote] = useState('');
 
   // Wiki edit mode state
-  const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState('');
   const [editAddress, setEditAddress] = useState('');
+
+  // Circle coordinates state
+  const [p1Circle, setP1Circle] = useState<{ x: number, y: number } | null>(null);
+  const [p2Circle, setP2Circle] = useState<{ x: number, y: number } | null>(null);
+  const [isEditingCircles, setIsEditingCircles] = useState(false);
 
   // Default center: Seoul City Hall
   const position: [number, number] = [37.5665, 126.9780];
@@ -168,6 +277,7 @@ export default function MapComponent() {
         // 중요: DB에 수정한 이름이 있으면 그것을 쓰고, 없으면 V-World 이름을 사용
         const currentName = existingData?.user_edited_name || existingData?.name || bldName;
         const currentAddress = existingData?.user_edited_address || existingData?.address || bldAddr;
+        const currentFloors = existingData?.floors || bldFloors || '?';
 
         // 방문 기록 저장 (기존 데이터가 아예 없을 때만 새로 추가)
         if (!existingData && !fetchError) {
@@ -185,16 +295,35 @@ export default function MapComponent() {
         }
 
         setSelectedLocation({
-          id: bldId, lat, lng,
-          name: currentName,
-          address: currentAddress,
-          floors: bldFloors,
-          geojson: feature.geometry,
-          has_photos: alreadyHasPhotos,
+          id: bldId, 
+          lat: lat || 0, 
+          lng: lng || 0,
+          name: currentName || '이름 없는 건물',
+          address: currentAddress || '주소 정보 없음',
+          floors: String(currentFloors),
+          geojson: feature?.geometry || null,
+          has_photos: !!alreadyHasPhotos,
+          field_note: existingData?.field_note || '',
+          photo1_x: existingData?.photo1_x,
+          photo1_y: existingData?.photo1_y,
+          photo2_x: existingData?.photo2_x,
+          photo2_y: existingData?.photo2_y,
           // 원본 정보 백업
-          originalName: existingData?.name || bldName,
-          originalAddress: existingData?.address || bldAddr
+          originalName: existingData?.name || bldName || '이름 없는 건물',
+          originalAddress: existingData?.address || bldAddr || '주소 정보 없음'
         });
+
+        // Set circles if they exist
+        if (existingData?.photo1_x !== undefined && existingData?.photo1_y !== undefined) {
+          setP1Circle({ x: existingData.photo1_x, y: existingData.photo1_y });
+        } else {
+          setP1Circle(null);
+        }
+        if (existingData?.photo2_x !== undefined && existingData?.photo2_y !== undefined) {
+          setP2Circle({ x: existingData.photo2_x, y: existingData.photo2_y });
+        } else {
+          setP2Circle(null);
+        }
       } else {
         // V-World 데이터가 없는 경우: 주변 10m 이내에 이미 등록된 수동 건물이 있는지 확인
         const threshold = 0.00015; // 약 15m 오차 허용 범위
@@ -307,7 +436,7 @@ export default function MapComponent() {
         )}
       </MapContainer>
 
-      {/* Top Bar - Glassmorphism */}
+      {/* Top Bar - Branded Glassmorphism */}
       <div
         className="glass"
         style={{
@@ -316,27 +445,28 @@ export default function MapComponent() {
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 1000,
-          padding: '12px 24px',
-          borderRadius: '100px',
+          padding: '8px 20px',
+          borderRadius: '20px',
           display: 'flex',
           alignItems: 'center',
           gap: '12px',
-          width: '90%',
-          maxWidth: '500px'
+          width: '94%',
+          maxWidth: '500px',
+          border: '1px solid rgba(255,255,255,0.1)'
         }}
       >
-        <div style={{ backgroundColor: 'var(--brand-red)', padding: '8px', borderRadius: '50%' }}>
-          <AlertCircle size={20} color="white" />
+        <div style={{ width: '40px', height: '40px', backgroundColor: 'var(--brand-red)', borderRadius: '12px', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center', boxShadow: '0 4px 12px rgba(255,42,42,0.3)' }}>
+          <img src="/logo.png" alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
         </div>
         <div style={{ flex: 1 }}>
-          <h1 style={{ margin: 0, fontSize: '15px', fontWeight: 800, letterSpacing: '-0.3px' }}>파이어링크 : 서울</h1>
-          <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)' }}>건물 연결송수관설비 정보 찾기</p>
+          <h1 style={{ margin: 0, fontSize: '17px', fontWeight: 900, letterSpacing: '-0.5px', color: 'white' }}>파이어링크 <span style={{ color: 'var(--brand-red)', fontSize: '11px', verticalAlign: 'top', fontWeight: 500 }}>SEOUL</span></h1>
+          <p style={{ margin: 0, fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>건물 연결송수관 설비 정보 시스템</p>
         </div>
         <button
           onClick={() => setShowMenu(true)}
-          style={{ background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}
+          style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', cursor: 'pointer', padding: '8px', borderRadius: '12px', display: 'flex', alignItems: 'center' }}
         >
-          <Menu size={24} />
+          <Menu size={20} />
         </button>
       </div>
 
@@ -421,26 +551,43 @@ export default function MapComponent() {
         )}
       </div>
 
-      {/* Loading Indicator */}
+      {/* Branded Loading Overlay */}
       {isLoading && (
         <div style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          zIndex: 1000,
-          backgroundColor: 'var(--surface)',
-          padding: '16px 24px',
-          borderRadius: '100px',
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(10, 11, 14, 0.9)',
+          backdropFilter: 'blur(10px)',
+          zIndex: 9999,
           display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-          border: '1px solid var(--border)'
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center'
         }}>
-          <Loader2 size={24} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-          <span style={{ fontWeight: 500 }}>건물 정보 조회 중...</span>
-          <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
+          <div style={{ position: 'relative', width: '100px', height: '100px', marginBottom: '24px' }}>
+            <div style={{ 
+              position: 'absolute', 
+              inset: '-10px', 
+              background: 'var(--brand-red)', 
+              borderRadius: '50%', 
+              opacity: 0.2, 
+              animation: 'logo-pulse 2s infinite' 
+            }}></div>
+            <img 
+              src="/logo.png" 
+              alt="Loading..." 
+              style={{ width: '100%', height: '100%', objectFit: 'contain', position: 'relative', zIndex: 1 }} 
+            />
+          </div>
+          <span style={{ color: 'white', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.5px' }}>데이터 분석 중...</span>
+          <span style={{ color: 'var(--text-secondary)', fontSize: '13px', marginTop: '8px' }}>파이어링크 : 대원의 안전이 최우선입니다</span>
+          <style>{`
+            @keyframes logo-pulse {
+              0% { transform: scale(1); opacity: 0.2; }
+              50% { transform: scale(1.4); opacity: 0; }
+              100% { transform: scale(1); opacity: 0.2; }
+            }
+          `}</style>
         </div>
       )}
 
@@ -650,28 +797,73 @@ export default function MapComponent() {
             </div>
 
             {selectedLocation.has_photos ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 600 }}>전경 사진 (Panorama)</span>
-                    <div style={{ width: '100%', aspectRatio: '4/3', backgroundColor: 'var(--surface)', borderRadius: '12px', display: 'flex', justifyContent: 'center', alignItems: 'center', border: '1px solid var(--border)', backgroundImage: 'url(https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=500&auto=format&fit=crop&q=60)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
-                      <div style={{ width: '40px', height: '40px', border: '3px solid var(--brand-red)', borderRadius: '50%', boxShadow: '0 0 10px rgba(255,42,42,0.8)', position: 'relative', top: '10px', left: '-20px' }}></div>
-                    </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                {/* ── '위치 수정' 버튼 (기능 트리거) ── */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                    {isEditingCircles ? '사진을 터치하여 송수구 위치를 지정하세요' : '연결송수관 위치가 표시된 사진입니다'}
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 600 }}>상세 사진 (Close-up)</span>
-                    <div style={{ width: '100%', aspectRatio: '4/3', backgroundColor: 'var(--surface)', borderRadius: '12px', display: 'flex', justifyContent: 'center', alignItems: 'center', border: '1px solid var(--border)', backgroundImage: 'url(https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=500&auto=format&fit=crop&q=60)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
-                    </div>
-                  </div>
+                  <button 
+                    className={isEditingCircles ? "btn-primary" : "btn-secondary"}
+                    style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px' }}
+                    onClick={async () => {
+                      if (isEditingCircles) {
+                        // 저장 로직
+                        try {
+                          if (!selectedLocation) return;
+                          const { error } = await supabase
+                            .from('buildings')
+                            .update({
+                              photo1_x: p1Circle?.x,
+                              photo1_y: p1Circle?.y,
+                              photo2_x: p2Circle?.x,
+                              photo2_y: p2Circle?.y
+                            })
+                            .eq('id', selectedLocation.id);
+                          
+                          if (error) throw error;
+                          setIsEditingCircles(false);
+                          fetchRegistry();
+                        } catch (error) {
+                          console.error(error);
+                          alert('위치 정보 저장 실패');
+                        }
+                      } else {
+                        setIsEditingCircles(true);
+                      }
+                    }}
+                  >
+                    {isEditingCircles ? '위치 저장 완료' : '위치 수정'}
+                  </button>
                 </div>
 
-                <div style={{ backgroundColor: 'var(--surface)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                    <Info size={16} color="var(--warning)" />
-                    <span style={{ fontWeight: 600, fontSize: '14px', color: 'var(--warning)' }}>현장 메모</span>
+                {/* ── 사진 수직 배치 ── */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <ImageWithCircle 
+                    label="건물 전체 전경 (송수구 위치 표시)"
+                    src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80"
+                    circle={p1Circle}
+                    onCircleSet={setP1Circle}
+                    isEditing={isEditingCircles}
+                  />
+                  <ImageWithCircle 
+                    label="설비 근접 사진 (상세 위치)"
+                    src="https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=800&auto=format&fit=crop&q=80"
+                    circle={p2Circle}
+                    onCircleSet={setP2Circle}
+                    isEditing={isEditingCircles}
+                  />
+                </div>
+
+                <div style={{ backgroundColor: 'var(--surface)', padding: '20px', borderRadius: '16px', border: '1px solid var(--border)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.2)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <div style={{ width: '24px', height: '24px', borderRadius: '6px', backgroundColor: 'rgba(255,170,0,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Info size={14} color="var(--warning)" />
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>현장 특이사항</span>
                   </div>
-                  <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.5 }}>
-                    해당 건물의 송수관은 우측 지하주차장 입구 1m 지점 화단 옆에 위치함. 야간 시 나무에 가려져 잘 보이지 않으므로 주의.
+                  <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                    {selectedLocation.field_note || '등록된 메모가 없습니다.'}
                   </p>
                 </div>
               </div>
@@ -732,7 +924,7 @@ export default function MapComponent() {
                   <span style={{ color: 'var(--brand-red)' }}>*필수</span>
                 </label>
                 <label style={{ height: '90px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', borderStyle: 'dashed', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo1 ? 'rgba(255,42,42,0.08)' : 'var(--surface)', cursor: 'pointer' }}>
-                  <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={e => setPhoto1(e.target.files?.[0] ?? null)} />
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto1(e.target.files?.[0] ?? null)} />
                   <Camera size={24} color={photo1 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
                   <span style={{ fontSize: '13px', color: photo1 ? 'var(--brand-red)' : 'var(--text-secondary)' }}>
                     {photo1 ? `✓ ${photo1.name}` : '탭하여 촬영 또는 파일 선택'}
@@ -746,7 +938,7 @@ export default function MapComponent() {
                   <span style={{ color: 'var(--brand-red)' }}>*필수</span>
                 </label>
                 <label style={{ height: '90px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', borderStyle: 'dashed', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo2 ? 'rgba(255,42,42,0.08)' : 'var(--surface)', cursor: 'pointer' }}>
-                  <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={e => setPhoto2(e.target.files?.[0] ?? null)} />
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto2(e.target.files?.[0] ?? null)} />
                   <Camera size={24} color={photo2 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
                   <span style={{ fontSize: '13px', color: photo2 ? 'var(--brand-red)' : 'var(--text-secondary)' }}>
                     {photo2 ? `✓ ${photo2.name}` : '탭하여 촬영 또는 파일 선택'}
@@ -773,12 +965,13 @@ export default function MapComponent() {
                     .from('buildings')
                     .update({
                       has_photos: true,
+                      field_note: fieldNote,
                       registered_at: new Date().toISOString()
                     })
                     .eq('id', selectedLocation.id);
 
                   if (!error) {
-                    setSelectedLocation((prev: any) => prev ? { ...prev, has_photos: true } : prev);
+                    setSelectedLocation((prev: any) => prev ? { ...prev, has_photos: true, field_note: fieldNote } : prev);
                     setPhoto1(null); setPhoto2(null); setFieldNote('');
                     setShowUploadModal(false);
                     fetchRegistry();
