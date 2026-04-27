@@ -250,6 +250,7 @@ export default function MapComponent() {
   const [p1Circle, setP1Circle] = useState<{ x: number, y: number } | null>(null);
   const [p2Circle, setP2Circle] = useState<{ x: number, y: number } | null>(null);
   const [isEditingCircles, setIsEditingCircles] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
   // Default center: Seoul City Hall
   const position: [number, number] = [37.5665, 126.9780];
