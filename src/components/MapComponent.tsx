@@ -148,11 +148,12 @@ function LocateControl() {
   useEffect(() => {
     map.on('locationfound', (e) => {
       setLocating(false);
-      map.flyTo(e.latlng, 17, { duration: 1.5 });
+      map.flyTo(e.latlng, 18, { duration: 1.5 });
     });
-    map.on('locationerror', () => {
+    map.on('locationerror', (e) => {
       setLocating(false);
-      alert('위치 권한이 거부되었거나 찾을 수 없습니다.');
+      console.error('Location error details:', e.message);
+      alert('위치 정보를 가져올 수 없습니다. GPS 설정과 브라우저 권한을 확인해주세요.');
     });
   }, [map]);
 
@@ -162,7 +163,12 @@ function LocateControl() {
       onClick={() => {
         try {
           setLocating(true);
-          map.locate();
+          map.locate({ 
+            setView: true, 
+            maxZoom: 18, 
+            enableHighAccuracy: true,
+            timeout: 10000 
+          });
         } catch (error) {
           console.error('Locate error:', error);
           setLocating(false);
@@ -309,6 +315,10 @@ export default function MapComponent() {
           console.error('Database record error:', dbErr);
         }
 
+        // Construct storage URLs
+        const photo1_url = alreadyHasPhotos ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/building-photos/${bldId}_1.jpg?t=${Date.now()}` : null;
+        const photo2_url = alreadyHasPhotos ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/building-photos/${bldId}_2.jpg?t=${Date.now()}` : null;
+
         setSelectedLocation({
           id: bldId, 
           lat: lat || 0, 
@@ -318,6 +328,8 @@ export default function MapComponent() {
           floors: String(currentFloors),
           geojson: feature?.geometry || null,
           has_photos: !!alreadyHasPhotos,
+          photo1_url,
+          photo2_url,
           field_note: existingData?.field_note || '',
           photo1_x: existingData?.photo1_x,
           photo1_y: existingData?.photo1_y,
@@ -856,16 +868,16 @@ export default function MapComponent() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                   <ImageWithCircle 
                     label="건물 전체 전경 (송수구 위치 표시)"
-                    src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80"
+                    src={selectedLocation.photo1_url || "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80"}
                     circle={p1Circle}
-                    onCircleSet={setP1Circle}
+                    onCircleSet={(pos) => setP1Circle(pos)}
                     isEditing={isEditingCircles}
                   />
                   <ImageWithCircle 
                     label="설비 근접 사진 (상세 위치)"
-                    src="https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=800&auto=format&fit=crop&q=80"
+                    src={selectedLocation.photo2_url || "https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=800&auto=format&fit=crop&q=80"}
                     circle={p2Circle}
-                    onCircleSet={setP2Circle}
+                    onCircleSet={(pos) => setP2Circle(pos)}
                     isEditing={isEditingCircles}
                   />
                 </div>
