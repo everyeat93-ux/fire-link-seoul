@@ -40,7 +40,7 @@ interface SelectedLocation extends BuildingRecord {
 }
 
 // ── Image with Circle Overlay Component ──
-function ImageWithCircle({ src, circle, onCircleSet, isEditing, label }: { src: string, circle: { x: number, y: number } | null, onCircleSet: (pos: { x: number, y: number }) => void, isEditing: boolean, label: string }) {
+function ImageWithCircle({ src, circle, onCircleSet, isEditing, label, allowCircle = true }: { src: string, circle: { x: number, y: number } | null, onCircleSet: (pos: { x: number, y: number }) => void, isEditing: boolean, label: string, allowCircle?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -51,29 +51,29 @@ function ImageWithCircle({ src, circle, onCircleSet, isEditing, label }: { src: 
 
     const render = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (circle) {
+      if (circle && allowCircle) {
         ctx.beginPath();
-        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 12, 0, 2 * Math.PI);
+        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 48, 0, 2 * Math.PI); // Radius 12 -> 48 (4x)
         ctx.strokeStyle = '#ff0000';
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 6;
         ctx.stroke();
         
         ctx.beginPath();
-        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 12, 0, 2 * Math.PI);
+        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 48, 0, 2 * Math.PI);
         ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
         ctx.fill();
 
         // Pulsing outer ring
         ctx.beginPath();
-        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 18, 0, 2 * Math.PI);
+        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 64, 0, 2 * Math.PI); // Radius 18 -> 64
         ctx.strokeStyle = 'rgba(255, 0, 0, 0.4)';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 3;
         ctx.stroke();
       }
     };
 
     render();
-  }, [circle]);
+  }, [circle, allowCircle]);
 
   const handleInteraction = (e: any) => {
     if (!isEditing) return;
@@ -107,23 +107,25 @@ function ImageWithCircle({ src, circle, onCircleSet, isEditing, label }: { src: 
           style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
           alt={label}
         />
-        <canvas
-          ref={canvasRef}
-          width={400}
-          height={300}
-          onClick={(e) => isEditing && handleInteraction(e)}
-          onTouchStart={(e) => isEditing && handleInteraction(e)}
-          style={{
-            position: 'absolute',
-            top: 0, left: 0,
-            width: '100%', height: '100%',
-            cursor: isEditing ? 'crosshair' : 'default',
-            touchAction: isEditing ? 'none' : 'auto', // Allow scroll when not editing
-            pointerEvents: isEditing ? 'auto' : 'none', // Critical: pass touches to parent for scrolling
-            zIndex: 10
-          }}
-        />
-        {isEditing && (
+        {allowCircle && (
+          <canvas
+            ref={canvasRef}
+            width={400}
+            height={300}
+            onClick={(e) => isEditing && handleInteraction(e)}
+            onTouchStart={(e) => isEditing && handleInteraction(e)}
+            style={{
+              position: 'absolute',
+              top: 0, left: 0,
+              width: '100%', height: '100%',
+              cursor: isEditing ? 'crosshair' : 'default',
+              touchAction: isEditing ? 'none' : 'auto', // Allow scroll when not editing
+              pointerEvents: isEditing ? 'auto' : 'none', // Critical: pass touches to parent for scrolling
+              zIndex: 10
+            }}
+          />
+        )}
+        {(isEditing && allowCircle) && (
           <div style={{ position: 'absolute', top: '12px', right: '12px', backgroundColor: 'rgba(255,42,42,0.9)', color: 'white', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, pointerEvents: 'none', zIndex: 20 }}>
             위치 지정 모드
           </div>
@@ -181,7 +183,7 @@ function LocateControl() {
       }}
       style={{
         position: 'absolute',
-        bottom: '130px', // Positioned higher to avoid mobile browser bottom bar
+        bottom: '180px', // Positioned higher to avoid mobile browser bottom bar
         right: '10px',
         zIndex: 1000,
         width: '34px',
@@ -715,7 +717,7 @@ export default function MapComponent() {
           zIndex: 1000,
           transition: 'bottom 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
           padding: '24px',
-          paddingBottom: 'calc(48px + env(safe-area-inset-bottom, 20px))',
+          paddingBottom: 'calc(140px + env(safe-area-inset-bottom, 40px))', // Drastically increased padding
           borderTopLeftRadius: '24px',
           borderTopRightRadius: '24px',
           maxHeight: '85vh',
@@ -898,6 +900,7 @@ export default function MapComponent() {
                     circle={p1Circle}
                     onCircleSet={(pos) => setP1Circle(pos)}
                     isEditing={isEditingCircles}
+                    allowCircle={true}
                   />
                   <ImageWithCircle 
                     label="설비 근접 사진 (상세 위치)"
@@ -905,6 +908,7 @@ export default function MapComponent() {
                     circle={p2Circle}
                     onCircleSet={(pos) => setP2Circle(pos)}
                     isEditing={isEditingCircles}
+                    allowCircle={false}
                   />
                 </div>
 

@@ -115,7 +115,7 @@ html, body {
   color: var(--brand-red) !important;
 }
 .leaflet-bottom.leaflet-right {
-  margin-bottom: 40px !important;
+  margin-bottom: 80px !important;
 }
 .leaflet-control-attribution {
   background: rgba(11, 12, 16, 0.7) !important;
