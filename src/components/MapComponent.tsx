@@ -160,8 +160,14 @@ function LocateControl() {
     <button
       className="glass btn-hover-effect"
       onClick={() => {
-        setLocating(true);
-        map.locate();
+        try {
+          setLocating(true);
+          map.locate();
+        } catch (error) {
+          console.error('Locate error:', error);
+          setLocating(false);
+          alert('위치 정보를 가져올 수 없습니다.');
+        }
       }}
       style={{
         position: 'absolute',
@@ -219,9 +225,13 @@ export default function MapComponent() {
   });
 
   const fetchRegistry = async () => {
-    const { data, error } = await supabase.from('buildings').select('*');
-    if (!error && data) {
-      setRegistry(data as BuildingRecord[]);
+    try {
+      const { data, error } = await supabase.from('buildings').select('*');
+      if (!error && data) {
+        setRegistry(data as BuildingRecord[]);
+      }
+    } catch (error) {
+      console.error('Fetch registry error:', error);
     }
   };
 
@@ -279,19 +289,23 @@ export default function MapComponent() {
         const currentAddress = existingData?.user_edited_address || existingData?.address || bldAddr;
         const currentFloors = existingData?.floors || bldFloors || '?';
 
-        // 방문 기록 저장 (기존 데이터가 아예 없을 때만 새로 추가)
-        if (!existingData && !fetchError) {
-          const newRecord = {
-            id: bldId,
-            name: bldName,
-            address: bldAddr,
-            lat, lng, floors: bldFloors,
-            has_photos: false,
-            visited_at: new Date().toISOString(),
-            device_id: deviceId
-          };
-          await supabase.from('buildings').insert(newRecord);
-          fetchRegistry();
+        try {
+          // 방문 기록 저장 (기존 데이터가 아예 없을 때만 새로 추가)
+          if (!existingData && !fetchError) {
+            const newRecord = {
+              id: bldId,
+              name: bldName,
+              address: bldAddr,
+              lat, lng, floors: bldFloors,
+              has_photos: false,
+              visited_at: new Date().toISOString(),
+              device_id: deviceId
+            };
+            await supabase.from('buildings').insert(newRecord);
+            fetchRegistry();
+          }
+        } catch (dbErr) {
+          console.error('Database record error:', dbErr);
         }
 
         setSelectedLocation({
