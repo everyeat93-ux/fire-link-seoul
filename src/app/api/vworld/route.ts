@@ -24,10 +24,19 @@ export async function GET(request: Request) {
   
   try {
     const res = await fetch(url);
+    
+    // Check if the response is actually JSON
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      console.error('V-World Non-JSON Response:', text);
+      return NextResponse.json({ error: 'V-World returned non-JSON response', details: text.slice(0, 100) }, { status: 502 });
+    }
+
     const data = await res.json();
     return NextResponse.json(data);
-  } catch (error) {
+  } catch (error: any) {
     console.error('V-World API Error:', error);
-    return NextResponse.json({ error: 'Failed to fetch from V-World' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch from V-World', details: error.message }, { status: 500 });
   }
 }
