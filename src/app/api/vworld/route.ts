@@ -23,7 +23,7 @@ export async function GET(request: Request) {
   const url = `https://api.vworld.kr/req/data?service=data&request=GetFeature&data=lt_c_bldginfo&key=${key}&domain=${domain}&geomFilter=point(${lng} ${lat})&crs=EPSG:4326&format=json`;
   
   try {
-    const res = await fetch(url);
+    let res = await fetch(url);
     
     // Check if the response is actually JSON
     const contentType = res.headers.get('content-type');
@@ -33,7 +33,27 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'V-World returned non-JSON response', details: text.slice(0, 100) }, { status: 502 });
     }
 
-    const data = await res.json();
+    let data = await res.json();
+    
+    // Fallback: if no features found at the exact point, try a bounding box search (~15m radius)
+    if (data.response?.status === 'OK' && (!data.response.result?.featureCollection?.features || data.response.result.featureCollection.features.length === 0)) {
+      const offset = 0.00015; // ~15 meters
+      const minX = parseFloat(lng as string) - offset;
+      const minY = parseFloat(lat as string) - offset;
+      const maxX = parseFloat(lng as string) + offset;
+      const maxY = parseFloat(lat as string) + offset;
+      const boxUrl = `https://api.vworld.kr/req/data?service=data&request=GetFeature&data=lt_c_bldginfo&key=${key}&domain=${domain}&geomFilter=BOX(${minX},${minY},${maxX},${maxY})&crs=EPSG:4326&format=json`;
+      
+      const boxRes = await fetch(boxUrl);
+      const boxContentType = boxRes.headers.get('content-type');
+      if (boxContentType && boxContentType.includes('application/json')) {
+        const boxData = await boxRes.json();
+        if (boxData.response?.status === 'OK' && boxData.response.result?.featureCollection?.features?.length > 0) {
+          data = boxData;
+        }
+      }
+    }
+
     return NextResponse.json(data);
   } catch (error: any) {
     console.error('V-World API Error:', error);
