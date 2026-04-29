@@ -31,56 +31,26 @@ interface BuildingRecord {
   // Actual file paths in storage
   photo1_path?: string;
   photo2_path?: string;
+  photo3_path?: string;
 }
 
 interface SelectedLocation extends BuildingRecord {
   geojson: any; // Leaflet GeoJSON data
   originalName: string;
   originalAddress: string;
+  photo3_url?: string | null;
 }
 
 // ── Image with Circle Overlay Component ──
 function ImageWithCircle({ src, circle, onCircleSet, isEditing, label, allowCircle = true }: { src: string, circle: { x: number, y: number } | null, onCircleSet: (pos: { x: number, y: number }) => void, isEditing: boolean, label: string, allowCircle?: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const render = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (circle && allowCircle) {
-        ctx.beginPath();
-        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 48, 0, 2 * Math.PI); // Radius 12 -> 48 (4x)
-        ctx.strokeStyle = '#ff0000';
-        ctx.lineWidth = 6;
-        ctx.stroke();
-        
-        ctx.beginPath();
-        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 48, 0, 2 * Math.PI);
-        ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
-        ctx.fill();
-
-        // Pulsing outer ring
-        ctx.beginPath();
-        ctx.arc(circle.x * canvas.width, circle.y * canvas.height, 64, 0, 2 * Math.PI); // Radius 18 -> 64
-        ctx.strokeStyle = 'rgba(255, 0, 0, 0.4)';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      }
-    };
-
-    render();
-  }, [circle, allowCircle]);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const handleInteraction = (e: any) => {
     if (!isEditing) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+
     let clientX, clientY;
     if (e.touches && e.touches[0]) {
       clientX = e.touches[0].clientX;
@@ -101,17 +71,18 @@ function ImageWithCircle({ src, circle, onCircleSet, isEditing, label, allowCirc
         <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--brand-red)' }}></div>
         {label}
       </span>
-      <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', backgroundColor: 'var(--surface)', borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border)', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
-        <img 
-          src={src} 
-          style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+      <div
+        ref={containerRef}
+        style={{ position: 'relative', width: '100%', backgroundColor: '#000', borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border)', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}
+      >
+        <img
+          src={src}
+          style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'contain' }}
           alt={label}
+          draggable={false}
         />
         {allowCircle && (
-          <canvas
-            ref={canvasRef}
-            width={400}
-            height={300}
+          <div
             onClick={(e) => isEditing && handleInteraction(e)}
             onTouchStart={(e) => isEditing && handleInteraction(e)}
             style={{
@@ -119,11 +90,37 @@ function ImageWithCircle({ src, circle, onCircleSet, isEditing, label, allowCirc
               top: 0, left: 0,
               width: '100%', height: '100%',
               cursor: isEditing ? 'crosshair' : 'default',
-              touchAction: isEditing ? 'none' : 'auto', // Allow scroll when not editing
-              pointerEvents: isEditing ? 'auto' : 'none', // Critical: pass touches to parent for scrolling
+              touchAction: isEditing ? 'none' : 'auto',
+              pointerEvents: isEditing ? 'auto' : 'none',
               zIndex: 10
             }}
-          />
+          >
+            {circle && (
+              <>
+                <div style={{
+                  position: 'absolute',
+                  left: `${circle.x * 100}%`,
+                  top: `${circle.y * 100}%`,
+                  width: '96px', height: '96px',
+                  transform: 'translate(-50%, -50%)',
+                  border: '6px solid #ff0000',
+                  borderRadius: '50%',
+                  backgroundColor: 'rgba(255, 0, 0, 0.2)',
+                  pointerEvents: 'none'
+                }} />
+                <div style={{
+                  position: 'absolute',
+                  left: `${circle.x * 100}%`,
+                  top: `${circle.y * 100}%`,
+                  width: '128px', height: '128px',
+                  transform: 'translate(-50%, -50%)',
+                  border: '3px solid rgba(255, 0, 0, 0.4)',
+                  borderRadius: '50%',
+                  pointerEvents: 'none'
+                }} />
+              </>
+            )}
+          </div>
         )}
         {(isEditing && allowCircle) && (
           <div style={{ position: 'absolute', top: '12px', right: '12px', backgroundColor: 'rgba(255,42,42,0.9)', color: 'white', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, pointerEvents: 'none', zIndex: 20 }}>
@@ -169,11 +166,11 @@ function LocateControl() {
       onClick={() => {
         try {
           setLocating(true);
-          map.locate({ 
-            setView: true, 
-            maxZoom: 18, 
+          map.locate({
+            setView: true,
+            maxZoom: 18,
             enableHighAccuracy: true,
-            timeout: 10000 
+            timeout: 10000
           });
         } catch (error) {
           console.error('Locate error:', error);
@@ -203,6 +200,16 @@ function LocateControl() {
   );
 }
 
+function MapUpdater({ center }: { center: [number, number] | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (center) {
+      map.flyTo(center, 18, { duration: 1.5 });
+    }
+  }, [center, map]);
+  return null;
+}
+
 export default function MapComponent() {
   const [selectedLocation, setSelectedLocation] = useState<SelectedLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -222,6 +229,27 @@ export default function MapComponent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [mapCenter, setMapCenter] = useState<[number, number] | null>(null);
+
+  const [searchHistory, setSearchHistory] = useState<any[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('fire-link-search-history');
+      return saved ? JSON.parse(saved) : [];
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('fire-link-search-history', JSON.stringify(searchHistory));
+  }, [searchHistory]);
+
+  const addToHistory = (item: any) => {
+    setSearchHistory(prev => {
+      const filtered = prev.filter(p => p.address?.parcel !== item.address?.parcel);
+      return [item, ...filtered].slice(0, 10);
+    });
+  };
 
   // Building registry (real data from Supabase)
   const [registry, setRegistry] = useState<BuildingRecord[]>([]);
@@ -252,6 +280,7 @@ export default function MapComponent() {
   // Upload photo states
   const [photo1, setPhoto1] = useState<File | null>(null);
   const [photo2, setPhoto2] = useState<File | null>(null);
+  const [photo3, setPhoto3] = useState<File | null>(null);
   const [fieldNote, setFieldNote] = useState('');
 
   // Wiki edit mode state
@@ -329,10 +358,11 @@ export default function MapComponent() {
         };
         const photo1_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo1_path) : null;
         const photo2_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo2_path) : null;
+        const photo3_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo3_path) : null;
 
         setSelectedLocation({
-          id: bldId, 
-          lat: lat || 0, 
+          id: bldId,
+          lat: lat || 0,
           lng: lng || 0,
           name: currentName || '이름 없는 건물',
           address: currentAddress || '주소 정보 없음',
@@ -341,6 +371,7 @@ export default function MapComponent() {
           has_photos: !!alreadyHasPhotos,
           photo1_url,
           photo2_url,
+          photo3_url,
           field_note: existingData?.field_note || '',
           photo1_x: existingData?.photo1_x,
           photo1_y: existingData?.photo1_y,
@@ -348,6 +379,7 @@ export default function MapComponent() {
           photo2_y: existingData?.photo2_y,
           photo1_path: existingData?.photo1_path,
           photo2_path: existingData?.photo2_path,
+          photo3_path: existingData?.photo3_path,
           // 원본 정보 백업
           originalName: existingData?.name || bldName || '이름 없는 건물',
           originalAddress: existingData?.address || bldAddr || '주소 정보 없음'
@@ -456,6 +488,7 @@ export default function MapComponent() {
 
         <ZoomControl position="bottomright" />
         <LocateControl />
+        <MapUpdater center={mapCenter} />
 
         <MapEvents onMapClick={handleMapClick} />
 
@@ -540,6 +573,8 @@ export default function MapComponent() {
             placeholder="주소나 건물명으로 검색 (예: 세종대로 110)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
             style={{
               flex: 1,
               background: 'transparent',
@@ -554,22 +589,29 @@ export default function MapComponent() {
         </form>
 
         {/* Search Results Dropdown */}
-        {searchResults.length > 0 && (
-          <div className="glass-panel" style={{ borderRadius: '16px', overflow: 'hidden', maxHeight: '250px', overflowY: 'auto' }}>
-            {searchResults.map((result, idx) => (
+        {(searchResults.length > 0 || (isSearchFocused && searchHistory.length > 0 && searchQuery === '')) && (
+          <div className="glass-panel" style={{ borderRadius: '16px', overflow: 'hidden', maxHeight: '250px', overflowY: 'auto', marginTop: '4px' }}>
+            {searchResults.length === 0 && (
+              <div style={{ padding: '8px 16px', fontSize: '12px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+                최근 검색 기록
+              </div>
+            )}
+            {(searchResults.length > 0 ? searchResults : searchHistory).map((result, idx) => (
               <div
                 key={idx}
                 onClick={async () => {
                   const lat = parseFloat(result.point.y);
                   const lng = parseFloat(result.point.x);
+                  if (searchResults.length > 0) addToHistory(result);
                   setSearchResults([]);
                   setSearchQuery('');
+                  setMapCenter([lat, lng]);
                   // Fly to location and fetch V-World polygon
                   await handleMapClick({ latlng: { lat, lng } } as any);
                 }}
                 style={{
                   padding: '12px 16px',
-                  borderBottom: idx < searchResults.length - 1 ? '1px solid var(--border)' : 'none',
+                  borderBottom: idx < (searchResults.length > 0 ? searchResults.length : searchHistory.length) - 1 ? '1px solid var(--border)' : 'none',
                   cursor: 'pointer',
                   display: 'flex',
                   flexDirection: 'column',
@@ -577,9 +619,12 @@ export default function MapComponent() {
                 }}
                 className="btn-hover-effect"
               >
-                <span style={{ fontSize: '14px', fontWeight: 600 }}>
-                  {result.address?.road || result.address?.parcel || '주소 정보'}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {searchResults.length === 0 && <History size={14} color="var(--text-secondary)" />}
+                  <span style={{ fontSize: '14px', fontWeight: 600 }}>
+                    {result.address?.road || result.address?.parcel || '주소 정보'}
+                  </span>
+                </div>
                 {result.address?.parcel && result.address?.road && (
                   <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                     지번: {result.address.parcel}
@@ -605,18 +650,18 @@ export default function MapComponent() {
           alignItems: 'center'
         }}>
           <div style={{ position: 'relative', width: '100px', height: '100px', marginBottom: '24px' }}>
-            <div style={{ 
-              position: 'absolute', 
-              inset: '-10px', 
-              background: 'var(--brand-red)', 
-              borderRadius: '50%', 
-              opacity: 0.2, 
-              animation: 'logo-pulse 2s infinite' 
+            <div style={{
+              position: 'absolute',
+              inset: '-10px',
+              background: 'var(--brand-red)',
+              borderRadius: '50%',
+              opacity: 0.2,
+              animation: 'logo-pulse 2s infinite'
             }}></div>
-            <img 
-              src="/logo.png" 
-              alt="Loading..." 
-              style={{ width: '100%', height: '100%', objectFit: 'contain', position: 'relative', zIndex: 1 }} 
+            <img
+              src="/logo.png"
+              alt="Loading..."
+              style={{ width: '100%', height: '100%', objectFit: 'contain', position: 'relative', zIndex: 1 }}
             />
           </div>
           <span style={{ color: 'white', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.5px' }}>데이터 분석 중...</span>
@@ -849,7 +894,7 @@ export default function MapComponent() {
                   </div>
                   <div style={{ display: 'flex', gap: '8px' }}>
                     {!isEditingCircles && (
-                      <button 
+                      <button
                         className="btn-secondary"
                         style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px', backgroundColor: 'rgba(255,255,255,0.05)' }}
                         onClick={() => setShowUploadModal(true)}
@@ -857,7 +902,7 @@ export default function MapComponent() {
                         사진 재등록
                       </button>
                     )}
-                    <button 
+                    <button
                       className={isEditingCircles ? "btn-primary" : "btn-secondary"}
                       style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px' }}
                       onClick={async () => {
@@ -874,7 +919,7 @@ export default function MapComponent() {
                                 photo2_y: p2Circle?.y
                               })
                               .eq('id', selectedLocation.id);
-                            
+
                             if (error) throw error;
                             setIsEditingCircles(false);
                             fetchRegistry();
@@ -894,7 +939,7 @@ export default function MapComponent() {
 
                 {/* ── 사진 수직 배치 ── */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  <ImageWithCircle 
+                  <ImageWithCircle
                     label="건물 전체 전경 (송수구 위치 표시)"
                     src={selectedLocation.photo1_url || "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80"}
                     circle={p1Circle}
@@ -902,7 +947,7 @@ export default function MapComponent() {
                     isEditing={isEditingCircles}
                     allowCircle={true}
                   />
-                  <ImageWithCircle 
+                  <ImageWithCircle
                     label="설비 근접 사진 (상세 위치)"
                     src={selectedLocation.photo2_url || "https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=800&auto=format&fit=crop&q=80"}
                     circle={p2Circle}
@@ -910,6 +955,16 @@ export default function MapComponent() {
                     isEditing={isEditingCircles}
                     allowCircle={false}
                   />
+                  {selectedLocation.photo3_url && (
+                    <ImageWithCircle
+                      label="지도 방면 표시 사진"
+                      src={selectedLocation.photo3_url}
+                      circle={null}
+                      onCircleSet={() => { }}
+                      isEditing={false}
+                      allowCircle={false}
+                    />
+                  )}
                 </div>
 
                 <div style={{ backgroundColor: 'var(--surface)', padding: '20px', borderRadius: '16px', border: '1px solid var(--border)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.2)' }}>
@@ -1004,6 +1059,20 @@ export default function MapComponent() {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <label style={{ fontSize: '14px', fontWeight: 600, display: 'flex', justifyContent: 'space-between' }}>
+                  <span>3. 지도 방면 표시 사진</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>선택</span>
+                </label>
+                <label style={{ height: '90px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', borderStyle: 'dashed', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo3 ? 'rgba(255,42,42,0.08)' : 'var(--surface)', cursor: 'pointer' }}>
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto3(e.target.files?.[0] ?? null)} />
+                  <Camera size={24} color={photo3 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
+                  <span style={{ fontSize: '13px', color: photo3 ? 'var(--brand-red)' : 'var(--text-secondary)' }}>
+                    {photo3 ? `✓ ${photo3.name}` : '탭하여 캡쳐 본 첨부'}
+                  </span>
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <label style={{ fontSize: '14px', fontWeight: 600 }}>현장 메모</label>
                 <textarea
                   placeholder="예: 우측 지하주차장 입구 1m 지점, 야간 식별 주의 등"
@@ -1025,14 +1094,21 @@ export default function MapComponent() {
                     const path1 = `${selectedLocation.id}_1.${ext1}`;
                     const path2 = `${selectedLocation.id}_2.${ext2}`;
 
-                    // Supabase Storage에 실제 파일 업로드 (upsert: 기존 파일 덮어쓰기)
-                    const [upload1, upload2] = await Promise.all([
-                      supabase.storage.from('building-photos').upload(path1, photo1, { upsert: true, contentType: photo1.type || `image/${ext1}` }),
-                      supabase.storage.from('building-photos').upload(path2, photo2, { upsert: true, contentType: photo2.type || `image/${ext2}` }),
-                    ]);
+                    const ext3 = photo3 ? (photo3.name.split('.').pop()?.toLowerCase() || 'jpg') : '';
+                    const path3 = photo3 ? `${selectedLocation.id}_3.${ext3}` : null;
 
-                    if (upload1.error) throw new Error('사진1 업로드 실패: ' + upload1.error.message);
-                    if (upload2.error) throw new Error('사진2 업로드 실패: ' + upload2.error.message);
+                    const uploadPromises = [
+                      supabase.storage.from('building-photos').upload(path1, photo1, { upsert: true, contentType: photo1.type || `image/${ext1}` }),
+                      supabase.storage.from('building-photos').upload(path2, photo2, { upsert: true, contentType: photo2.type || `image/${ext2}` })
+                    ];
+                    if (photo3 && path3) {
+                      uploadPromises.push(supabase.storage.from('building-photos').upload(path3, photo3, { upsert: true, contentType: photo3.type || `image/${ext3}` }));
+                    }
+
+                    const results = await Promise.all(uploadPromises);
+                    if (results[0].error) throw new Error('사진1 업로드 실패: ' + results[0].error.message);
+                    if (results[1].error) throw new Error('사진2 업로드 실패: ' + results[1].error.message);
+                    if (photo3 && results[2] && results[2].error) throw new Error('사진3 업로드 실패: ' + results[2].error.message);
 
                     // DB에 파일 경로 및 메타데이터 저장
                     const { error: dbError } = await supabase
@@ -1043,6 +1119,7 @@ export default function MapComponent() {
                         registered_at: new Date().toISOString(),
                         photo1_path: path1,
                         photo2_path: path2,
+                        ...(photo3 && path3 ? { photo3_path: path3 } : {})
                       })
                       .eq('id', selectedLocation.id);
 
@@ -1057,11 +1134,13 @@ export default function MapComponent() {
                       field_note: fieldNote,
                       photo1_path: path1,
                       photo2_path: path2,
+                      photo3_path: path3,
                       photo1_url: `${baseUrl}/storage/v1/object/public/building-photos/${path1}?t=${ts}`,
                       photo2_url: `${baseUrl}/storage/v1/object/public/building-photos/${path2}?t=${ts}`,
+                      photo3_url: path3 ? `${baseUrl}/storage/v1/object/public/building-photos/${path3}?t=${ts}` : null,
                     } : prev);
 
-                    setPhoto1(null); setPhoto2(null); setFieldNote('');
+                    setPhoto1(null); setPhoto2(null); setPhoto3(null); setFieldNote('');
                     setShowUploadModal(false);
                     fetchRegistry();
                   } catch (err: any) {
