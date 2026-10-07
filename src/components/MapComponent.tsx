@@ -139,6 +139,8 @@ export default function MapComponent() {
   const roadviewRef = useRef<any>(null);
   const roadviewClientRef = useRef<any>(null);
   const roadviewMarkerRef = useRef<any>(null);
+  // High-speed In-Memory Building Cache
+  const buildingCacheRef = useRef<Map<string, SelectedLocation>>(new Map());
 
   const [mapLoaded, setMapLoaded] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<SelectedLocation | null>(null);
@@ -339,16 +341,24 @@ export default function MapComponent() {
     }
   };
 
-  // ── 위치 선택 및 V-World 건물 데이터 조회 ──
+  // ── 위치 선택 및 V-World 건물 데이터 조회 (인메모리 캐시 & 초고속 비동기) ──
   const handleLocationSelect = async (lat: number, lng: number, shouldMoveMap = false) => {
-    setIsLoading(true);
-    setSelectedLocation(null);
-
     const map = kakaoMapRef.current;
     if (map && shouldMoveMap && window.kakao?.maps) {
       const targetLatLng = new window.kakao.maps.LatLng(lat, lng);
       map.panTo(targetLatLng);
     }
+
+    // 1. 초고속 인메모리 캐시 확인 (0.01초 즉시 반응)
+    const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    const cached = buildingCacheRef.current.get(cacheKey);
+    if (cached) {
+      setSelectedLocation(cached);
+      drawGeoJson(cached.geojson);
+      return;
+    }
+
+    setIsLoading(true);
 
     try {
       const response = await fetch(`/api/vworld?lat=${lat}&lng=${lng}`);
@@ -361,10 +371,21 @@ export default function MapComponent() {
       if (data?.response?.status === 'OK' && data.response.result?.featureCollection?.features?.length > 0) {
         const feature = data.response.result.featureCollection.features[0];
         const bldId = feature.id;
+
+        // bldId 캐시도 한번 더 확인
+        const cachedById = buildingCacheRef.current.get(bldId);
+        if (cachedById) {
+          setSelectedLocation(cachedById);
+          drawGeoJson(cachedById.geojson);
+          setIsLoading(false);
+          return;
+        }
+
         const bldName = feature.properties.bld_nm || '이름 없는 건물';
         const bldAddr = feature.properties.jibun_adres || feature.properties.road_adres || '주소 정보 없음';
         const bldFloors = feature.properties.grnd_flr || '?';
 
+        // Supabase에서 해당 건물 정보 조회
         const { data: existingData, error: fetchError } = await supabase
           .from('buildings')
           .select('*')
@@ -376,22 +397,20 @@ export default function MapComponent() {
         const currentAddress = existingData?.user_edited_address || existingData?.address || bldAddr;
         const currentFloors = existingData?.floors || bldFloors || '?';
 
-        try {
-          if (!existingData && !fetchError) {
-            const newRecord = {
-              id: bldId,
-              name: bldName,
-              address: bldAddr,
-              lat, lng, floors: bldFloors,
-              has_photos: false,
-              visited_at: new Date().toISOString(),
-              device_id: deviceId
-            };
-            await supabase.from('buildings').upsert(newRecord);
-            fetchRegistry();
-          }
-        } catch (dbErr) {
-          console.error('Database record error:', dbErr);
+        // 방문 기록 저장은 비동기 백그라운드로 수행 (화면 표시 지연 방지)
+        if (!existingData && !fetchError) {
+          const newRecord = {
+            id: bldId,
+            name: bldName,
+            address: bldAddr,
+            lat, lng, floors: bldFloors,
+            has_photos: false,
+            visited_at: new Date().toISOString(),
+            device_id: deviceId
+          };
+          supabase.from('buildings').upsert(newRecord).then(() => {
+            setRegistry(prev => [...prev.filter(r => r.id !== bldId), newRecord as BuildingRecord]);
+          }).catch(console.error);
         }
 
         const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
@@ -426,6 +445,10 @@ export default function MapComponent() {
           originalName: existingData?.name || bldName || '이름 없는 건물',
           originalAddress: existingData?.address || bldAddr || '주소 정보 없음'
         };
+
+        // 캐시 저장
+        buildingCacheRef.current.set(cacheKey, locationData);
+        buildingCacheRef.current.set(bldId, locationData);
 
         setSelectedLocation(locationData);
         drawGeoJson(feature?.geometry);
@@ -997,45 +1020,32 @@ export default function MapComponent() {
           </div>
         )}
 
-        {/* ── Branded Loading Overlay ── */}
+        {/* ── 스마트 슬림 플로팅 로딩 인디케이터 (지도를 가리지 않고 즉시 반응) ── */}
         {isLoading && (
           <div style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(10, 11, 14, 0.9)',
+            position: 'absolute',
+            top: isSplitRoadview ? '12px' : '150px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 2500,
+            backgroundColor: 'rgba(15, 17, 23, 0.95)',
             backdropFilter: 'blur(10px)',
-            zIndex: 9999,
+            border: '1px solid var(--brand-red)',
+            borderRadius: '100px',
+            padding: '8px 20px',
             display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'center',
-            alignItems: 'center'
+            alignItems: 'center',
+            gap: '10px',
+            boxShadow: '0 8px 24px rgba(255, 42, 42, 0.35)',
+            pointerEvents: 'none'
           }}>
-            <div style={{ position: 'relative', width: '100px', height: '100px', marginBottom: '24px' }}>
-              <div style={{
-                position: 'absolute',
-                inset: '-10px',
-                background: 'var(--brand-red)',
-                borderRadius: '50%',
-                opacity: 0.2,
-                animation: 'logo-pulse 2s infinite'
-              }}></div>
-              <img
-                src="/logo.png"
-                alt="Loading..."
-                style={{ width: '100%', height: '100%', objectFit: 'contain', position: 'relative', zIndex: 1 }}
-              />
-            </div>
-            <span style={{ color: 'white', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.5px' }}>건물 설비 데이터 분석 중...</span>
-            <span style={{ color: 'var(--text-secondary)', fontSize: '13px', marginTop: '8px' }}>파이어링크 : 대원의 안전이 최우선입니다</span>
-            <style>{`
-              @keyframes logo-pulse {
-                0% { transform: scale(1); opacity: 0.2; }
-                50% { transform: scale(1.4); opacity: 0; }
-                100% { transform: scale(1); opacity: 0.2; }
-              }
-            `}</style>
+            <Loader2 size={16} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
+            <span style={{ fontSize: '13px', color: 'white', fontWeight: 700, letterSpacing: '-0.3px' }}>
+              건물 외곽선 및 송수관 정보 스캔 중...
+            </span>
           </div>
         )}
+
 
         {/* ── Bottom Sheet - Details View ── */}
         <div

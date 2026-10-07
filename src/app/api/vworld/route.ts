@@ -23,7 +23,7 @@ export async function GET(request: Request) {
   const url = `https://api.vworld.kr/req/data?service=data&request=GetFeature&data=lt_c_bldginfo&key=${key}&domain=${domain}&geomFilter=point(${lng} ${lat})&crs=EPSG:4326&format=json`;
   
   try {
-    let res = await fetch(url);
+    let res = await fetch(url, { next: { revalidate: 86400 } });
     
     // Check if the response is actually JSON
     const contentType = res.headers.get('content-type');
@@ -44,7 +44,7 @@ export async function GET(request: Request) {
       const maxY = parseFloat(lat as string) + offset;
       const boxUrl = `https://api.vworld.kr/req/data?service=data&request=GetFeature&data=lt_c_bldginfo&key=${key}&domain=${domain}&geomFilter=BOX(${minX},${minY},${maxX},${maxY})&crs=EPSG:4326&format=json`;
       
-      const boxRes = await fetch(boxUrl);
+      const boxRes = await fetch(boxUrl, { next: { revalidate: 86400 } });
       const boxContentType = boxRes.headers.get('content-type');
       if (boxContentType && boxContentType.includes('application/json')) {
         const boxData = await boxRes.json();
@@ -54,7 +54,11 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json(data);
+    return NextResponse.json(data, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=43200'
+      }
+    });
   } catch (error: any) {
     console.error('V-World API Error:', error);
     return NextResponse.json({ error: 'Failed to fetch from V-World', details: error.message }, { status: 500 });
