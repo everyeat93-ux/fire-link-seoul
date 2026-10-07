@@ -222,7 +222,7 @@ export default function MapComponent() {
 
   // ── 카카오 지도 스크립트 로드 및 초기화 ──
   useEffect(() => {
-    const kakaoApiKey = process.env.NEXT_PUBLIC_KAKAO_MAP_API_KEY || 'e67e87141db814b83d55a8a72255db09';
+    const kakaoApiKey = process.env.NEXT_PUBLIC_KAKAO_MAP_API_KEY || '273458bd7122bda4cfec7d99c5764bfc';
 
     const initKakao = () => {
       if (!window.kakao || !window.kakao.maps) return;
