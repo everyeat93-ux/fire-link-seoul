@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers, Eye, Compass, Building, Calendar, ShieldCheck, Ruler, CheckCircle2, ChevronUp, ChevronDown, Edit3 } from 'lucide-react';
+import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers, Eye, Compass, Building, Calendar, ShieldCheck, Ruler, CheckCircle2, ChevronUp, ChevronDown, Edit3, FileText, ChevronRight } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface BuildingRecord {
@@ -620,6 +620,8 @@ export default function MapComponent() {
 
   const moveToRoadview = (lat: number, lng: number) => {
     initOrMoveRoadview(lat, lng);
+    // 지도 탭 시 해당 위치의 건물 정보도 함께 갱신하여 확인 가능하도록 연동
+    handleLocationSelect(lat, lng, false);
   };
 
   const updateRoadviewMarkerPosition = (latlng: any) => {
@@ -703,32 +705,65 @@ export default function MapComponent() {
             alignItems: 'center',
             zIndex: 10
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '11px', backgroundColor: 'var(--brand-red)', color: 'white', padding: '2px 8px', borderRadius: '100px', fontWeight: 800 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
+              <span style={{ fontSize: '11px', backgroundColor: 'var(--brand-red)', color: 'white', padding: '2px 8px', borderRadius: '100px', fontWeight: 800, whiteSpace: 'nowrap' }}>
                 360° 로드뷰
               </span>
-              <span style={{ fontSize: '12px', color: 'white', fontWeight: 600 }}>
-                지도의 원하는 도로를 탭하면 로드뷰가 즉시 이동합니다
-              </span>
+              {selectedLocation ? (
+                <span style={{ fontSize: '12px', color: 'white', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  🏢 {selectedLocation.name}
+                </span>
+              ) : (
+                <span style={{ fontSize: '12px', color: 'white', fontWeight: 600 }}>
+                  도로를 탭하면 로드뷰가 이동합니다
+                </span>
+              )}
             </div>
-            <button
-              onClick={closeSplitRoadview}
-              style={{
-                background: 'rgba(0,0,0,0.6)',
-                border: '1px solid rgba(255,255,255,0.3)',
-                color: 'white',
-                borderRadius: '50%',
-                width: '30px',
-                height: '30px',
-                cursor: 'pointer',
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center'
-              }}
-              title="로드뷰 닫기"
-            >
-              <X size={16} />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {selectedLocation && (
+                <button
+                  onClick={() => setShowDetailSheet(true)}
+                  style={{
+                    background: 'rgba(255,255,255,0.18)',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    color: 'white',
+                    borderRadius: '100px',
+                    padding: '5px 12px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
+                  }}
+                  title="건물 상세 제원 및 송수관 사진 보기"
+                >
+                  <FileText size={13} color="#6ea8fe" />
+                  <span>건물 정보/사진</span>
+                </button>
+              )}
+              <button
+                onClick={closeSplitRoadview}
+                style={{
+                  background: 'rgba(0,0,0,0.6)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  color: 'white',
+                  borderRadius: '100px',
+                  padding: '5px 10px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '11px',
+                  fontWeight: 600
+                }}
+                title="로드뷰 닫고 전체 지도로 복귀"
+              >
+                <X size={14} />
+                <span>닫기</span>
+              </button>
+            </div>
           </div>
 
           <div ref={roadviewContainerRef} style={{ width: '100%', height: '100%' }} />
@@ -756,8 +791,48 @@ export default function MapComponent() {
           style={{ width: '100%', height: '100%', backgroundColor: '#1a1d24' }}
         />
 
+        {/* ── [로드뷰 분할 모드] 하단 간이 건물 정보 퀵 바 (탭하면 상세 정보/사진 즉시 확인) ── */}
+        {isSplitRoadview && selectedLocation && (
+          <div
+            className="glass-panel btn-hover-effect"
+            onClick={() => setShowDetailSheet(true)}
+            style={{
+              position: 'absolute',
+              bottom: '16px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 1000,
+              padding: '8px 16px',
+              borderRadius: '100px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              cursor: 'pointer',
+              border: '1px solid rgba(255,255,255,0.25)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+              backgroundColor: 'rgba(20, 24, 33, 0.94)',
+              maxWidth: '92%'
+            }}
+          >
+            <span style={{ fontSize: '13px', fontWeight: 800, color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              🏢 {selectedLocation.name}
+            </span>
+            <span style={{
+              fontSize: '11px',
+              fontWeight: 800,
+              color: selectedLocation.has_photos ? '#00e676' : '#ff5252',
+              whiteSpace: 'nowrap'
+            }}>
+              {selectedLocation.has_photos ? '✓ 등록완료' : '! 미등록'}
+            </span>
+            <span style={{ fontSize: '11px', color: '#6ea8fe', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '2px', whiteSpace: 'nowrap' }}>
+              건물 정보/사진 <ChevronRight size={13} />
+            </span>
+          </div>
+        )}
+
         {/* ── 지도 우측 플로팅 컨트롤 ── */}
-        <div style={{ position: 'absolute', bottom: selectedLocation ? '160px' : '30px', right: '14px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '8px', transition: 'bottom 0.3s ease' }}>
+        <div style={{ position: 'absolute', bottom: selectedLocation ? (isSplitRoadview ? '70px' : '160px') : '30px', right: '14px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '8px', transition: 'bottom 0.3s ease' }}>
           
           {/* 스카이뷰(위성사진) 토글 */}
           <button
