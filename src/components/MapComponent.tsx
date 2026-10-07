@@ -1,11 +1,8 @@
 // @ts-nocheck
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { MapContainer, TileLayer, GeoJSON, useMapEvents, useMap, ZoomControl } from 'react-leaflet';
-import L from 'leaflet';
-import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Edit2 } from 'lucide-react';
-import 'leaflet/dist/leaflet.css';
+import { useState, useEffect, useRef } from 'react';
+import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface BuildingRecord {
@@ -35,7 +32,7 @@ interface BuildingRecord {
 }
 
 interface SelectedLocation extends BuildingRecord {
-  geojson: any; // Leaflet GeoJSON data
+  geojson: any;
   originalName: string;
   originalAddress: string;
   photo3_url?: string | null;
@@ -132,89 +129,19 @@ function ImageWithCircle({ src, circle, onCircleSet, isEditing, label, allowCirc
   );
 }
 
-
-// Component to handle map clicks
-function MapEvents({ onMapClick }: { onMapClick: (e: L.LeafletMouseEvent) => void }) {
-  useMapEvents({
-    click(e) {
-      onMapClick(e);
-    },
-  });
-  return null;
-}
-
-// Locate Me Control
-function LocateControl() {
-  const map = useMap();
-  const [locating, setLocating] = useState(false);
-
-  useEffect(() => {
-    map.on('locationfound', (e) => {
-      setLocating(false);
-      map.flyTo(e.latlng, 18, { duration: 1.5 });
-    });
-    map.on('locationerror', (e) => {
-      setLocating(false);
-      console.error('Location error details:', e.message);
-      alert('위치 정보를 가져올 수 없습니다. GPS 설정과 브라우저 권한을 확인해주세요.');
-    });
-  }, [map]);
-
-  return (
-    <button
-      className="glass btn-hover-effect"
-      onClick={() => {
-        try {
-          setLocating(true);
-          map.locate({
-            setView: true,
-            maxZoom: 18,
-            enableHighAccuracy: true,
-            timeout: 10000
-          });
-        } catch (error) {
-          console.error('Locate error:', error);
-          setLocating(false);
-          alert('위치 정보를 가져올 수 없습니다.');
-        }
-      }}
-      style={{
-        position: 'absolute',
-        bottom: '180px', // Positioned higher to avoid mobile browser bottom bar
-        right: '10px',
-        zIndex: 1000,
-        width: '34px',
-        height: '34px',
-        borderRadius: '8px', // Match leaflet zoom control style
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        border: '1px solid var(--border)',
-        cursor: 'pointer',
-        padding: 0,
-        backgroundColor: 'var(--surface)'
-      }}
-    >
-      <LocateFixed size={18} color={locating ? "var(--brand-red)" : "var(--text-primary)"} className={locating ? "animate-pulse" : ""} />
-    </button>
-  );
-}
-
-function MapUpdater({ center }: { center: [number, number] | null }) {
-  const map = useMap();
-  useEffect(() => {
-    if (center) {
-      map.flyTo(center, 18, { duration: 1.5 });
-    }
-  }, [center, map]);
-  return null;
-}
-
 export default function MapComponent() {
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const kakaoMapRef = useRef<any>(null);
+  const currentOverlaysRef = useRef<any[]>([]);
+  const registeredMarkersRef = useRef<any[]>([]);
+
+  const [mapLoaded, setMapLoaded] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<SelectedLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [isSkyview, setIsSkyview] = useState(false);
+  const [locating, setLocating] = useState(false);
 
   // Menu panel states
   const [showUnregistered, setShowUnregistered] = useState(false);
@@ -230,8 +157,8 @@ export default function MapComponent() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [mapCenter, setMapCenter] = useState<[number, number] | null>(null);
 
+  // Search history in localStorage
   const [searchHistory, setSearchHistory] = useState<any[]>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('fire-link-search-history');
@@ -254,7 +181,7 @@ export default function MapComponent() {
   // Building registry (real data from Supabase)
   const [registry, setRegistry] = useState<BuildingRecord[]>([]);
 
-  // Device UUID - "나" 구분자 (기기당 고유 ID, 로그인 없는 MVP)
+  // Device UUID
   const [deviceId] = useState<string>(() => {
     if (typeof window === 'undefined') return '';
     const stored = localStorage.getItem('fire-link-device-id');
@@ -293,16 +220,118 @@ export default function MapComponent() {
   const [isEditingCircles, setIsEditingCircles] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
-  // Default center: Seoul City Hall
-  const position: [number, number] = [37.5665, 126.9780];
+  // ── 카카오 지도 스크립트 로드 및 초기화 ──
+  useEffect(() => {
+    const kakaoApiKey = process.env.NEXT_PUBLIC_KAKAO_MAP_API_KEY || 'f73312cbefd24bcc380d645b30a549a9';
 
-  const handleMapClick = async (e: L.LeafletMouseEvent) => {
-    const { lat, lng } = e.latlng;
+    const initKakao = () => {
+      if (!window.kakao || !window.kakao.maps) return;
+      window.kakao.maps.load(() => {
+        if (!mapContainerRef.current) return;
+        
+        // 기존 지도 중복 생성 방지
+        if (kakaoMapRef.current) return;
+
+        const options = {
+          center: new window.kakao.maps.LatLng(37.5665, 126.9780), // 서울 시청
+          level: 3 // 상세 거리 줌 레벨
+        };
+        const map = new window.kakao.maps.Map(mapContainerRef.current, options);
+        kakaoMapRef.current = map;
+        setMapLoaded(true);
+
+        // 지도 클릭 시 건물 조회 이벤트
+        window.kakao.maps.event.addListener(map, 'click', (mouseEvent: any) => {
+          const latlng = mouseEvent.latLng;
+          handleLocationSelect(latlng.getLat(), latlng.getLng());
+        });
+      });
+    };
+
+    if (window.kakao && window.kakao.maps) {
+      initKakao();
+    } else {
+      const existingScript = document.getElementById('kakao-map-script');
+      if (!existingScript) {
+        const script = document.createElement('script');
+        script.id = 'kakao-map-script';
+        script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${kakaoApiKey}&autoload=false`;
+        script.async = true;
+        script.onload = () => initKakao();
+        document.head.appendChild(script);
+      } else {
+        existingScript.addEventListener('load', initKakao);
+      }
+    }
+  }, []);
+
+  // ── 카카오 지도 위에 GeoJSON 건물 폴리곤 그리기 ──
+  const drawGeoJson = (geojson: any) => {
+    const map = kakaoMapRef.current;
+    if (!map || !window.kakao?.maps) return;
+
+    // 이전 폴리곤들 제거
+    currentOverlaysRef.current.forEach(item => item.setMap(null));
+    currentOverlaysRef.current = [];
+
+    if (!geojson) return;
+
+    const { type, coordinates } = geojson;
+
+    if (type === 'Polygon') {
+      const paths = coordinates[0].map(([lng, lat]: [number, number]) => new window.kakao.maps.LatLng(lat, lng));
+      const polygon = new window.kakao.maps.Polygon({
+        path: paths,
+        strokeWeight: 3,
+        strokeColor: '#ff2a2a',
+        strokeOpacity: 0.95,
+        fillColor: '#ff2a2a',
+        fillOpacity: 0.4
+      });
+      polygon.setMap(map);
+      currentOverlaysRef.current.push(polygon);
+    } else if (type === 'MultiPolygon') {
+      coordinates.forEach((poly: any) => {
+        const paths = poly[0].map(([lng, lat]: [number, number]) => new window.kakao.maps.LatLng(lat, lng));
+        const polygon = new window.kakao.maps.Polygon({
+          path: paths,
+          strokeWeight: 3,
+          strokeColor: '#ff2a2a',
+          strokeOpacity: 0.95,
+          fillColor: '#ff2a2a',
+          fillOpacity: 0.4
+        });
+        polygon.setMap(map);
+        currentOverlaysRef.current.push(polygon);
+      });
+    } else if (type === 'Point') {
+      const [lng, lat] = coordinates;
+      const circle = new window.kakao.maps.Circle({
+        center: new window.kakao.maps.LatLng(lat, lng),
+        radius: 12,
+        strokeWeight: 2,
+        strokeColor: '#ffffff',
+        strokeOpacity: 1,
+        fillColor: '#ff2a2a',
+        fillOpacity: 0.8
+      });
+      circle.setMap(map);
+      currentOverlaysRef.current.push(circle);
+    }
+  };
+
+  // ── 위치 선택 및 V-World 건물 데이터 조회 ──
+  const handleLocationSelect = async (lat: number, lng: number, shouldMoveMap = false) => {
     setIsLoading(true);
     setSelectedLocation(null);
 
+    const map = kakaoMapRef.current;
+    if (map && shouldMoveMap && window.kakao?.maps) {
+      const targetLatLng = new window.kakao.maps.LatLng(lat, lng);
+      map.panTo(targetLatLng);
+    }
+
     try {
-      // Fetch data from V-World Data API via Next.js API route
       const response = await fetch(`/api/vworld?lat=${lat}&lng=${lng}`);
       const data = await response.json();
 
@@ -322,17 +351,14 @@ export default function MapComponent() {
           .from('buildings')
           .select('*')
           .eq('id', bldId)
-          .maybeSingle(); // .single() 대신 .maybeSingle() 사용 (0개일 때 에러 방지)
+          .maybeSingle();
 
         const alreadyHasPhotos = existingData?.has_photos ?? false;
-
-        // 중요: DB에 수정한 이름이 있으면 그것을 쓰고, 없으면 V-World 이름을 사용
         const currentName = existingData?.user_edited_name || existingData?.name || bldName;
         const currentAddress = existingData?.user_edited_address || existingData?.address || bldAddr;
         const currentFloors = existingData?.floors || bldFloors || '?';
 
         try {
-          // 방문 기록 저장 (기존 데이터가 아예 없을 때만 새로 추가)
           if (!existingData && !fetchError) {
             const newRecord = {
               id: bldId,
@@ -350,7 +376,6 @@ export default function MapComponent() {
           console.error('Database record error:', dbErr);
         }
 
-        // Construct storage URLs using actual saved file paths (handles any extension)
         const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
         const buildPhotoUrl = (path: string | undefined | null) => {
           if (!path) return null;
@@ -360,7 +385,7 @@ export default function MapComponent() {
         const photo2_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo2_path) : null;
         const photo3_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo3_path) : null;
 
-        setSelectedLocation({
+        const locationData: SelectedLocation = {
           id: bldId,
           lat: lat || 0,
           lng: lng || 0,
@@ -380,12 +405,13 @@ export default function MapComponent() {
           photo1_path: existingData?.photo1_path,
           photo2_path: existingData?.photo2_path,
           photo3_path: existingData?.photo3_path,
-          // 원본 정보 백업
           originalName: existingData?.name || bldName || '이름 없는 건물',
           originalAddress: existingData?.address || bldAddr || '주소 정보 없음'
-        });
+        };
 
-        // Set circles if they exist
+        setSelectedLocation(locationData);
+        drawGeoJson(feature?.geometry);
+
         if (existingData?.photo1_x !== undefined && existingData?.photo1_y !== undefined) {
           setP1Circle({ x: existingData.photo1_x, y: existingData.photo1_y });
         } else {
@@ -397,8 +423,8 @@ export default function MapComponent() {
           setP2Circle(null);
         }
       } else {
-        // V-World 데이터가 없는 경우: 주변 10m 이내에 이미 등록된 수동 건물이 있는지 확인
-        const threshold = 0.00015; // 약 15m 오차 허용 범위
+        // V-World 데이터가 없는 경우 주변 수동 건물 탐색
+        const threshold = 0.00015;
         const existingManual = registry.find(r =>
           r.id.startsWith('manual-') &&
           Math.abs(r.lat - lat) < threshold &&
@@ -414,8 +440,8 @@ export default function MapComponent() {
             originalName: '건물 정보 없음',
             originalAddress: 'V-World 데이터 없음'
           });
+          drawGeoJson(null);
         } else {
-          // 새로 등록할 경우의 ID 생성
           const manualId = `manual-${lat.toFixed(6)}-${lng.toFixed(6)}`;
           setSelectedLocation({
             id: manualId, lat, lng,
@@ -426,11 +452,12 @@ export default function MapComponent() {
             originalName: '건물 정보 없음',
             originalAddress: 'V-World 데이터 없음'
           });
+          drawGeoJson(null);
         }
       }
     } catch (error) {
       console.error("Failed to fetch location data:", error);
-      alert('데이터를 불러오는데 실패했습니다. (.env.local 파일에 VWORLD_API_KEY를 설정했는지 확인해주세요)');
+      alert('데이터를 불러오는데 실패했습니다.');
     } finally {
       setIsLoading(false);
     }
@@ -459,57 +486,129 @@ export default function MapComponent() {
     }
   };
 
-  // Fix for 'Mark' broken image: render a custom circle instead of default marker for Point GeoJSON
-  const pointToLayer = (feature: any, latlng: L.LatLng) => {
-    return L.circleMarker(latlng, {
-      radius: 8,
-      fillColor: "var(--brand-red)",
-      color: "#ffffff",
-      weight: 2,
-      opacity: 1,
-      fillOpacity: 0.8,
-      className: 'marker-pulse'
-    });
+  // 현위치로 이동 (GPS)
+  const handleLocateMe = () => {
+    if (!navigator.geolocation) {
+      alert('GPS를 지원하지 않는 브라우저입니다.');
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        const { latitude, longitude } = pos.coords;
+        if (kakaoMapRef.current && window.kakao?.maps) {
+          const loc = new window.kakao.maps.LatLng(latitude, longitude);
+          kakaoMapRef.current.panTo(loc);
+          kakaoMapRef.current.setLevel(2);
+        }
+      },
+      (err) => {
+        setLocating(false);
+        console.error('Locate error:', err);
+        alert('위치 정보를 가져올 수 없습니다. 브라우저 위치 권한을 확인해주세요.');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  // 일반지도 <-> 스카이뷰(위성사진) 토글
+  const toggleMapType = () => {
+    const map = kakaoMapRef.current;
+    if (!map || !window.kakao?.maps) return;
+
+    if (isSkyview) {
+      map.setMapTypeId(window.kakao.maps.MapTypeId.ROADMAP);
+      setIsSkyview(false);
+    } else {
+      map.setMapTypeId(window.kakao.maps.MapTypeId.HYBRID);
+      setIsSkyview(true);
+    }
+  };
+
+  // 지도 확대 / 축소
+  const handleZoom = (delta: number) => {
+    const map = kakaoMapRef.current;
+    if (!map) return;
+    const currentLevel = map.getLevel();
+    map.setLevel(currentLevel + delta);
   };
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      <MapContainer
-        center={position}
-        zoom={16}
-        style={{ width: '100%', height: '100%', zIndex: 1 }}
-        zoomControl={false}
-      >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          className="dark-tiles"
-        />
+      {/* ── 카카오 지도 캔버스 컨테이너 ── */}
+      <div
+        ref={mapContainerRef}
+        style={{ width: '100%', height: '100%', backgroundColor: '#1a1d24' }}
+      />
 
-        <ZoomControl position="bottomright" />
-        <LocateControl />
-        <MapUpdater center={mapCenter} />
+      {/* ── 지도 우측 컨트롤 (위성 스카이뷰 전환 / 줌 / 현위치) ── */}
+      <div style={{ position: 'absolute', bottom: '140px', right: '14px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {/* 스카이뷰(위성사진) 토글 버튼 */}
+        <button
+          className="glass btn-hover-effect"
+          onClick={toggleMapType}
+          style={{
+            width: '42px',
+            height: '42px',
+            borderRadius: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            border: isSkyview ? '2px solid var(--brand-red)' : '1px solid var(--border)',
+            backgroundColor: isSkyview ? 'rgba(255,42,42,0.2)' : 'var(--surface)',
+            cursor: 'pointer',
+            padding: 0,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+          }}
+          title={isSkyview ? "일반지도로 전환" : "위성 스카이뷰로 전환"}
+        >
+          <Layers size={18} color={isSkyview ? "var(--brand-red)" : "var(--text-primary)"} />
+          <span style={{ fontSize: '9px', fontWeight: 700, color: isSkyview ? "var(--brand-red)" : "var(--text-secondary)", marginTop: '1px' }}>
+            {isSkyview ? "위성" : "지도"}
+          </span>
+        </button>
 
-        <MapEvents onMapClick={handleMapClick} />
+        {/* 줌 확대/축소 */}
+        <div className="glass" style={{ borderRadius: '12px', border: '1px solid var(--border)', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
+          <button
+            onClick={() => handleZoom(-1)}
+            style={{ width: '42px', height: '36px', background: 'var(--surface)', border: 'none', borderBottom: '1px solid var(--border)', color: 'white', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
+          >
+            +
+          </button>
+          <button
+            onClick={() => handleZoom(1)}
+            style={{ width: '42px', height: '36px', background: 'var(--surface)', border: 'none', color: 'white', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
+          >
+            -
+          </button>
+        </div>
 
-        {/* Highlight the selected building polygon or point */}
-        {selectedLocation?.geojson && (
-          <GeoJSON
-            key={selectedLocation.id}
-            data={selectedLocation.geojson}
-            pointToLayer={pointToLayer}
-            style={{
-              color: 'var(--brand-red)',
-              weight: 3,
-              fillColor: 'var(--brand-red)',
-              fillOpacity: 0.4,
-              className: 'marker-pulse'
-            }}
-          />
-        )}
-      </MapContainer>
+        {/* 현위치 (GPS) 버튼 */}
+        <button
+          className="glass btn-hover-effect"
+          onClick={handleLocateMe}
+          style={{
+            width: '42px',
+            height: '42px',
+            borderRadius: '12px',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            border: '1px solid var(--border)',
+            cursor: 'pointer',
+            backgroundColor: 'var(--surface)',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+          }}
+          title="내 위치 찾기"
+        >
+          <LocateFixed size={20} color={locating ? "var(--brand-red)" : "var(--text-primary)"} className={locating ? "animate-pulse" : ""} />
+        </button>
+      </div>
 
-      {/* Top Bar - Branded Glassmorphism */}
+      {/* ── Top Bar - Branded Glassmorphism ── */}
       <div
         className="glass"
         style={{
@@ -532,8 +631,10 @@ export default function MapComponent() {
           <img src="/logo.png" alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
         </div>
         <div style={{ flex: 1 }}>
-          <h1 style={{ margin: 0, fontSize: '17px', fontWeight: 900, letterSpacing: '-0.5px', color: 'white' }}>파이어링크 <span style={{ color: 'var(--brand-red)', fontSize: '11px', verticalAlign: 'top', fontWeight: 500 }}>SEOUL</span></h1>
-          <p style={{ margin: 0, fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>건물 연결송수관 설비 정보 시스템</p>
+          <h1 style={{ margin: 0, fontSize: '17px', fontWeight: 900, letterSpacing: '-0.5px', color: 'white' }}>
+            파이어링크 <span style={{ color: 'var(--brand-red)', fontSize: '11px', verticalAlign: 'top', fontWeight: 500 }}>SEOUL</span>
+          </h1>
+          <p style={{ margin: 0, fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>건물 연결송수관 설비 정보 시스템 · 카카오맵 연동</p>
         </div>
         <button
           onClick={() => setShowMenu(true)}
@@ -543,7 +644,7 @@ export default function MapComponent() {
         </button>
       </div>
 
-      {/* Search Bar */}
+      {/* ── Search Bar & Recent History ── */}
       <div style={{
         position: 'absolute',
         top: '90px',
@@ -588,7 +689,7 @@ export default function MapComponent() {
           {isSearching && <Loader2 size={16} className="animate-spin" color="var(--brand-red)" style={{ animation: 'spin 1s linear infinite' }} />}
         </form>
 
-        {/* Search Results Dropdown */}
+        {/* 검색 결과 및 최근 검색 기록 드롭다운 */}
         {(searchResults.length > 0 || (isSearchFocused && searchHistory.length > 0 && searchQuery === '')) && (
           <div className="glass-panel" style={{ borderRadius: '16px', overflow: 'hidden', maxHeight: '250px', overflowY: 'auto', marginTop: '4px' }}>
             {searchResults.length === 0 && (
@@ -605,9 +706,8 @@ export default function MapComponent() {
                   if (searchResults.length > 0) addToHistory(result);
                   setSearchResults([]);
                   setSearchQuery('');
-                  setMapCenter([lat, lng]);
-                  // Fly to location and fetch V-World polygon
-                  await handleMapClick({ latlng: { lat, lng } } as any);
+                  // 해당 위치로 카카오 지도 이동 및 건물 폴리곤 불러오기
+                  await handleLocationSelect(lat, lng, true);
                 }}
                 style={{
                   padding: '12px 16px',
@@ -636,7 +736,7 @@ export default function MapComponent() {
         )}
       </div>
 
-      {/* Branded Loading Overlay */}
+      {/* ── Branded Loading Overlay ── */}
       {isLoading && (
         <div style={{
           position: 'fixed',
@@ -664,7 +764,7 @@ export default function MapComponent() {
               style={{ width: '100%', height: '100%', objectFit: 'contain', position: 'relative', zIndex: 1 }}
             />
           </div>
-          <span style={{ color: 'white', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.5px' }}>데이터 분석 중...</span>
+          <span style={{ color: 'white', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.5px' }}>건물 설비 데이터 분석 중...</span>
           <span style={{ color: 'var(--text-secondary)', fontSize: '13px', marginTop: '8px' }}>파이어링크 : 대원의 안전이 최우선입니다</span>
           <style>{`
             @keyframes logo-pulse {
@@ -676,7 +776,7 @@ export default function MapComponent() {
         </div>
       )}
 
-      {/* Side Menu Drawer */}
+      {/* ── Side Menu Drawer ── */}
       {showMenu && (
         <div style={{
           position: 'fixed',
@@ -745,13 +845,13 @@ export default function MapComponent() {
             </div>
 
             <div style={{ marginTop: 'auto', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>
-              Fire-Link: Seoul v1.0.0
+              Fire-Link: Seoul v1.1 (Kakao Map Engine)
             </div>
           </div>
         </div>
       )}
 
-      {/* Bottom Sheet - Details View */}
+      {/* ── Bottom Sheet - Details View ── */}
       <div
         className="glass-panel"
         style={{
@@ -762,7 +862,7 @@ export default function MapComponent() {
           zIndex: 1000,
           transition: 'bottom 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
           padding: '24px',
-          paddingBottom: 'calc(140px + env(safe-area-inset-bottom, 40px))', // Drastically increased padding
+          paddingBottom: 'calc(140px + env(safe-area-inset-bottom, 40px))',
           borderTopLeftRadius: '24px',
           borderTopRightRadius: '24px',
           maxHeight: '85vh',
@@ -826,10 +926,8 @@ export default function MapComponent() {
                             };
 
                             const { error } = await supabase.from('buildings').upsert(editData);
-
                             if (error) throw error;
 
-                            // 로컬 상태 즉시 업데이트
                             setSelectedLocation((prev: any) => ({
                               ...prev,
                               name: updatedName || prev.originalName || prev.name,
@@ -839,7 +937,7 @@ export default function MapComponent() {
                             }));
 
                             setIsEditing(false);
-                            await fetchRegistry(); // 전체 목록 새로고침
+                            await fetchRegistry();
                           } catch (err: any) {
                             console.error('Save error:', err);
                             alert('저장 중 오류가 발생했습니다: ' + (err.message || '알 수 없는 오류'));
@@ -858,7 +956,6 @@ export default function MapComponent() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                       <MapPinned size={18} color="var(--brand-red)" />
                       <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>{selectedLocation.name}</h2>
-                      {/* 편집 버튼 */}
                       <button
                         title="건물 정보 수정"
                         onClick={() => { setEditName(selectedLocation.name === '이름 없는 건물' ? '' : selectedLocation.name); setEditAddress(selectedLocation.address === '주소 정보 없음' ? '' : selectedLocation.address); setIsEditing(true); }}
@@ -868,7 +965,6 @@ export default function MapComponent() {
                       </button>
                     </div>
                     <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px', wordBreak: 'keep-all' }}>{selectedLocation.address}</p>
-                    {/* 편집 이력 뱃지 */}
                     {registry.find(r => r.id === selectedLocation.id)?.user_edited_name && (
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginTop: '6px', backgroundColor: 'rgba(30,120,255,0.15)', border: '1px solid rgba(30,120,255,0.3)', borderRadius: '100px', padding: '2px 8px' }}>
                         <span style={{ fontSize: '10px', color: '#6ea8fe' }}>🔵 대원 편집됨 · {new Date(registry.find(r => r.id === selectedLocation.id)!.edited_at!).toLocaleDateString('ko-KR')}</span>
@@ -878,7 +974,7 @@ export default function MapComponent() {
                 )}
               </div>
               <button
-                onClick={() => { setSelectedLocation(null); setIsEditing(false); }}
+                onClick={() => { setSelectedLocation(null); setIsEditing(false); drawGeoJson(null); }}
                 style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', flexShrink: 0 }}
               >
                 <X size={24} />
@@ -887,7 +983,6 @@ export default function MapComponent() {
 
             {selectedLocation.has_photos ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                {/* ── '위치 수정' 버튼 (기능 트리거) ── */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 500 }}>
                     {isEditingCircles ? '사진을 터치하여 송수구 위치를 지정하세요' : '연결송수관 위치가 표시된 사진입니다'}
@@ -907,7 +1002,6 @@ export default function MapComponent() {
                       style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px' }}
                       onClick={async () => {
                         if (isEditingCircles) {
-                          // 저장 로직
                           try {
                             if (!selectedLocation) return;
                             const { error } = await supabase
@@ -937,10 +1031,10 @@ export default function MapComponent() {
                   </div>
                 </div>
 
-                {/* ── 사진 수직 배치 ── */}
+                {/* ── 사진 수직 배치 (원본 비율 유지) ── */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                   <ImageWithCircle
-                    label="건물 전체 전경 (송수구 위치 표시)"
+                    label="1. 건물 전체 전경 (송수구 위치 표시)"
                     src={selectedLocation.photo1_url || "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80"}
                     circle={p1Circle}
                     onCircleSet={(pos) => setP1Circle(pos)}
@@ -948,7 +1042,7 @@ export default function MapComponent() {
                     allowCircle={true}
                   />
                   <ImageWithCircle
-                    label="설비 근접 사진 (상세 위치)"
+                    label="2. 설비 근접 사진 (상세 위치)"
                     src={selectedLocation.photo2_url || "https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=800&auto=format&fit=crop&q=80"}
                     circle={p2Circle}
                     onCircleSet={(pos) => setP2Circle(pos)}
@@ -957,10 +1051,10 @@ export default function MapComponent() {
                   />
                   {selectedLocation.photo3_url && (
                     <ImageWithCircle
-                      label="지도 방면 표시 사진"
+                      label="3. 지도 방면 표시 사진"
                       src={selectedLocation.photo3_url}
                       circle={null}
-                      onCircleSet={() => { }}
+                      onCircleSet={() => {}}
                       isEditing={false}
                       allowCircle={false}
                     />
@@ -1008,7 +1102,7 @@ export default function MapComponent() {
         )}
       </div>
 
-      {/* Upload Modal Overlay */}
+      {/* ── Upload Modal Overlay ── */}
       {showUploadModal && (
         <div style={{
           position: 'fixed',
@@ -1021,7 +1115,7 @@ export default function MapComponent() {
           justifyContent: 'flex-end'
         }}>
           <div style={{ flex: 1 }} onClick={() => setShowUploadModal(false)}></div>
-          <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px' }}>
+          <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
               <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>현장 데이터 업로드</h2>
               <button onClick={() => setShowUploadModal(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}>
@@ -1088,7 +1182,6 @@ export default function MapComponent() {
                   if (!selectedLocation || !photo1 || !photo2) return;
 
                   try {
-                    // 파일 확장자를 보존하여 실제 파일 업로드
                     const ext1 = photo1.name.split('.').pop()?.toLowerCase() || 'jpg';
                     const ext2 = photo2.name.split('.').pop()?.toLowerCase() || 'jpg';
                     const path1 = `${selectedLocation.id}_1.${ext1}`;
@@ -1110,7 +1203,6 @@ export default function MapComponent() {
                     if (results[1].error) throw new Error('사진2 업로드 실패: ' + results[1].error.message);
                     if (photo3 && results[2] && results[2].error) throw new Error('사진3 업로드 실패: ' + results[2].error.message);
 
-                    // DB에 파일 경로 및 메타데이터 저장
                     const { error: dbError } = await supabase
                       .from('buildings')
                       .update({
@@ -1125,7 +1217,6 @@ export default function MapComponent() {
 
                     if (dbError) throw new Error('정보 저장 실패: ' + dbError.message);
 
-                    // 로컬 상태 업데이트 (즉시 사진 표시)
                     const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
                     const ts = Date.now();
                     setSelectedLocation((prev: any) => prev ? {
@@ -1154,7 +1245,8 @@ export default function MapComponent() {
           </div>
         </div>
       )}
-      {/* ── 미등록 건물 현황 모달 (실데이터: localStorage registry) ── */}
+
+      {/* ── 미등록 건물 현황 모달 ── */}
       {showUnregistered && (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 3000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
           <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '80vh', overflowY: 'auto' }}>
@@ -1176,7 +1268,7 @@ export default function MapComponent() {
               </div>
             ) : (
               registry.filter(r => !r.has_photos).map((b, i) => (
-                <div key={i} onClick={() => { setShowUnregistered(false); handleMapClick({ latlng: { lat: b.lat, lng: b.lng } } as any); }}
+                <div key={i} onClick={() => { setShowUnregistered(false); handleLocationSelect(b.lat, b.lng, true); }}
                   style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', backgroundColor: 'var(--surface)', borderRadius: '12px', marginBottom: '8px', border: '1px solid var(--border)', cursor: 'pointer' }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: '14px' }}>{b.name}</div>
@@ -1190,7 +1282,7 @@ export default function MapComponent() {
         </div>
       )}
 
-      {/* ── 내 기여 현황 모달 (실데이터: localStorage registry) ── */}
+      {/* ── 내 기여 현황 모달 ── */}
       {showStats && (() => {
         const registered = registry.filter(r => r.has_photos);
         const unregistered = registry.filter(r => !r.has_photos);
