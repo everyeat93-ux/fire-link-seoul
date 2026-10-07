@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers } from 'lucide-react';
+import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers, Eye } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface BuildingRecord {
@@ -142,6 +142,13 @@ export default function MapComponent() {
   const [showMenu, setShowMenu] = useState(false);
   const [isSkyview, setIsSkyview] = useState(false);
   const [locating, setLocating] = useState(false);
+
+  // Roadview states
+  const [showRoadview, setShowRoadview] = useState(false);
+  const [roadviewLoading, setRoadviewLoading] = useState(false);
+  const [roadviewError, setRoadviewError] = useState<string | null>(null);
+  const roadviewContainerRef = useRef<HTMLDivElement>(null);
+  const roadviewInstanceRef = useRef<any>(null);
 
   // Menu panel states
   const [showUnregistered, setShowUnregistered] = useState(false);
@@ -533,6 +540,46 @@ export default function MapComponent() {
     const currentLevel = map.getLevel();
     map.setLevel(currentLevel + delta);
   };
+
+  // ── 카카오 로드뷰 열기 및 초기화 ──
+  const openRoadview = () => {
+    if (!selectedLocation) return;
+    setShowRoadview(true);
+    setRoadviewLoading(true);
+    setRoadviewError(null);
+  };
+
+  useEffect(() => {
+    if (!showRoadview || !selectedLocation || !roadviewContainerRef.current) return;
+    if (!window.kakao || !window.kakao.maps) {
+      setRoadviewError('카카오 지도 SDK를 불러오지 못했습니다.');
+      setRoadviewLoading(false);
+      return;
+    }
+
+    const container = roadviewContainerRef.current;
+    container.innerHTML = '';
+
+    try {
+      const roadview = new window.kakao.maps.Roadview(container);
+      roadviewInstanceRef.current = roadview;
+      const roadviewClient = new window.kakao.maps.RoadviewClient();
+      const position = new window.kakao.maps.LatLng(selectedLocation.lat, selectedLocation.lng);
+
+      roadviewClient.getNearestPanoId(position, 100, (panoId: any) => {
+        setRoadviewLoading(false);
+        if (panoId) {
+          roadview.setPanoId(panoId, position);
+        } else {
+          setRoadviewError('해당 건물 반경 100m 이내에 촬영된 카카오 로드뷰가 없습니다.');
+        }
+      });
+    } catch (err: any) {
+      console.error('Roadview init error:', err);
+      setRoadviewLoading(false);
+      setRoadviewError('로드뷰를 불러오는 중 오류가 발생했습니다.');
+    }
+  }, [showRoadview, selectedLocation]);
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -970,6 +1017,29 @@ export default function MapComponent() {
                         <span style={{ fontSize: '10px', color: '#6ea8fe' }}>🔵 대원 편집됨 · {new Date(registry.find(r => r.id === selectedLocation.id)!.edited_at!).toLocaleDateString('ko-KR')}</span>
                       </div>
                     )}
+                    {/* 현장 360° 로드뷰 보기 버튼 */}
+                    <div style={{ marginTop: '10px' }}>
+                      <button
+                        onClick={openRoadview}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '6px 14px',
+                          borderRadius: '100px',
+                          backgroundColor: 'rgba(255, 42, 42, 0.15)',
+                          border: '1px solid var(--brand-red)',
+                          color: 'white',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                        className="btn-hover-effect"
+                      >
+                        <Eye size={14} color="var(--brand-red)" />
+                        <span>현장 360° 로드뷰(거리뷰) 확인</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1417,6 +1487,101 @@ export default function MapComponent() {
                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>{s.addr}</div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── 현장 360° 로드뷰(거리뷰) 팝업 모달 ── */}
+      {showRoadview && selectedLocation && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0,0,0,0.85)',
+          backdropFilter: 'blur(8px)',
+          zIndex: 3500,
+          display: 'flex',
+          flexDirection: 'column'
+        }}>
+          {/* 로드뷰 헤더 */}
+          <div style={{
+            padding: '16px 20px',
+            backgroundColor: 'var(--surface)',
+            borderBottom: '1px solid var(--border)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{ width: '34px', height: '34px', borderRadius: '10px', backgroundColor: 'rgba(255,42,42,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Eye size={18} color="var(--brand-red)" />
+              </div>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>{selectedLocation.name}</h3>
+                  <span style={{ fontSize: '11px', backgroundColor: 'var(--brand-red)', color: 'white', padding: '2px 8px', borderRadius: '100px', fontWeight: 700 }}>360° 로드뷰</span>
+                </div>
+                <p style={{ margin: '2px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>{selectedLocation.address}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowRoadview(false)}
+              style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: '6px' }}
+            >
+              <X size={26} />
+            </button>
+          </div>
+
+          {/* 로드뷰 화면 컨테이너 */}
+          <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%', backgroundColor: '#000' }}>
+            <div
+              ref={roadviewContainerRef}
+              style={{ width: '100%', height: '100%' }}
+            />
+
+            {roadviewLoading && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: 'rgba(0,0,0,0.7)',
+                zIndex: 10
+              }}>
+                <Loader2 size={36} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite', marginBottom: '12px' }} />
+                <span style={{ color: 'white', fontSize: '14px', fontWeight: 600 }}>현장 360° 로드뷰 연결 중...</span>
+                <span style={{ color: 'var(--text-secondary)', fontSize: '12px', marginTop: '6px' }}>카카오 정밀 거리뷰 파노라마를 불러오고 있습니다</span>
+              </div>
+            )}
+
+            {roadviewError && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: 'rgba(0,0,0,0.85)',
+                padding: '24px',
+                textAlign: 'center',
+                zIndex: 10
+              }}>
+                <AlertCircle size={48} color="var(--brand-red)" style={{ marginBottom: '12px' }} />
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '16px', fontWeight: 700 }}>로드뷰를 불러올 수 없습니다</h4>
+                <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)', maxWidth: '320px', lineHeight: 1.6 }}>
+                  {roadviewError}
+                </p>
+                <button
+                  className="btn-primary"
+                  onClick={() => setShowRoadview(false)}
+                  style={{ marginTop: '20px', padding: '10px 24px', fontSize: '13px' }}
+                >
+                  닫기
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
