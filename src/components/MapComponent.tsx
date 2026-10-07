@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers, Eye, Compass, Navigation } from 'lucide-react';
+import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers, Eye, Compass, Building, Calendar, ShieldCheck, Ruler, CheckCircle2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface BuildingRecord {
@@ -29,6 +29,14 @@ interface BuildingRecord {
   photo1_path?: string;
   photo2_path?: string;
   photo3_path?: string;
+  // Architecture specs from official registry
+  ugrnd_flr?: string;
+  totar?: string;
+  useapr_day?: string;
+  structure?: string;
+  purpose?: string;
+  road_address?: string;
+  jibun_address?: string;
 }
 
 interface SelectedLocation extends BuildingRecord {
@@ -37,6 +45,12 @@ interface SelectedLocation extends BuildingRecord {
   originalAddress: string;
   photo3_url?: string | null;
 }
+
+// ── 퀵 위치 태그 목록 (소방관용 원터치 입력) ──
+const QUICK_TAGS = [
+  '정문 우측', '정문 좌측', '주차장 입구', '화단 뒤쪽',
+  '가로수 가림', '야간 식별 주의', '쌍구형(65mm)', '단구형', '불법주차 잦음'
+];
 
 // ── Image with Circle Overlay Component ──
 function ImageWithCircle({ src, circle, onCircleSet, isEditing, label, allowCircle = true }: { src: string, circle: { x: number, y: number } | null, onCircleSet: (pos: { x: number, y: number }) => void, isEditing: boolean, label: string, allowCircle?: boolean }) {
@@ -139,7 +153,6 @@ export default function MapComponent() {
   const roadviewRef = useRef<any>(null);
   const roadviewClientRef = useRef<any>(null);
   const roadviewMarkerRef = useRef<any>(null);
-  // High-speed In-Memory Building Cache
   const buildingCacheRef = useRef<Map<string, SelectedLocation>>(new Map());
 
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -154,7 +167,6 @@ export default function MapComponent() {
   // ── 지도 + 로드뷰 동시 분할 모드 (Split View) 상태 ──
   const [isSplitRoadview, setIsSplitRoadview] = useState(false);
   const [roadviewLoading, setRoadviewLoading] = useState(false);
-  const [roadviewAddress, setRoadviewAddress] = useState<string>('');
   const [roadviewError, setRoadviewError] = useState<string | null>(null);
 
   // Menu panel states
@@ -245,14 +257,13 @@ export default function MapComponent() {
         if (kakaoMapRef.current) return;
 
         const options = {
-          center: new window.kakao.maps.LatLng(37.5665, 126.9780), // 서울 시청
+          center: new window.kakao.maps.LatLng(37.5665, 126.9780),
           level: 3
         };
         const map = new window.kakao.maps.Map(mapContainerRef.current, options);
         kakaoMapRef.current = map;
         setMapLoaded(true);
 
-        // 지도 클릭 시: 분할 로드뷰 모드일 때는 로드뷰 위치 이동, 일반 모드일 때는 건물 조회
         window.kakao.maps.event.addListener(map, 'click', (mouseEvent: any) => {
           const latlng = mouseEvent.latLng;
           if (splitRoadviewRef.current) {
@@ -281,7 +292,6 @@ export default function MapComponent() {
     }
   }, []);
 
-  // 분할 로드뷰 ref (이벤트 리스너 클로저 대응)
   const splitRoadviewRef = useRef(isSplitRoadview);
   useEffect(() => {
     splitRoadviewRef.current = isSplitRoadview;
@@ -341,7 +351,7 @@ export default function MapComponent() {
     }
   };
 
-  // ── 위치 선택 및 V-World 건물 데이터 조회 (인메모리 캐시 & 초고속 비동기) ──
+  // ── 위치 선택 및 V-World 정부 건축물대장 데이터 자동 파싱 ──
   const handleLocationSelect = async (lat: number, lng: number, shouldMoveMap = false) => {
     const map = kakaoMapRef.current;
     if (map && shouldMoveMap && window.kakao?.maps) {
@@ -370,9 +380,9 @@ export default function MapComponent() {
 
       if (data?.response?.status === 'OK' && data.response.result?.featureCollection?.features?.length > 0) {
         const feature = data.response.result.featureCollection.features[0];
+        const props = feature.properties || {};
         const bldId = feature.id;
 
-        // bldId 캐시도 한번 더 확인
         const cachedById = buildingCacheRef.current.get(bldId);
         if (cachedById) {
           setSelectedLocation(cachedById);
@@ -381,11 +391,19 @@ export default function MapComponent() {
           return;
         }
 
-        const bldName = feature.properties.bld_nm || '이름 없는 건물';
-        const bldAddr = feature.properties.jibun_adres || feature.properties.road_adres || '주소 정보 없음';
-        const bldFloors = feature.properties.grnd_flr || '?';
+        // 국토교통부 건축물대장 정밀 속성 파싱
+        const bldName = props.bld_nm || '이름 없는 건물';
+        const roadAddr = props.road_adres || '';
+        const jibunAddr = props.jibun_adres || '';
+        const bldAddr = roadAddr || jibunAddr || '주소 정보 없음';
+        const grndFlr = props.grnd_flr || '?';
+        const ugrndFlr = props.ugrnd_flr || '0';
+        const totar = props.totar || '';
+        const useaprDay = props.useapr_day || '';
+        const structure = props.strct_cd_nm || '';
+        const purpose = props.main_purps_cd_nm || '';
 
-        // Supabase에서 해당 건물 정보 조회
+        // Supabase에서 대원 사진 및 메모 조회
         const { data: existingData, error: fetchError } = await supabase
           .from('buildings')
           .select('*')
@@ -395,15 +413,14 @@ export default function MapComponent() {
         const alreadyHasPhotos = existingData?.has_photos ?? false;
         const currentName = existingData?.user_edited_name || existingData?.name || bldName;
         const currentAddress = existingData?.user_edited_address || existingData?.address || bldAddr;
-        const currentFloors = existingData?.floors || bldFloors || '?';
 
-        // 방문 기록 저장은 비동기 백그라운드로 수행 (화면 표시 지연 방지)
+        // 방문 기록 백그라운드 저장
         if (!existingData && !fetchError) {
           const newRecord = {
             id: bldId,
             name: bldName,
             address: bldAddr,
-            lat, lng, floors: bldFloors,
+            lat, lng, floors: grndFlr,
             has_photos: false,
             visited_at: new Date().toISOString(),
             device_id: deviceId
@@ -428,7 +445,14 @@ export default function MapComponent() {
           lng: lng || 0,
           name: currentName || '이름 없는 건물',
           address: currentAddress || '주소 정보 없음',
-          floors: String(currentFloors),
+          floors: String(grndFlr),
+          ugrnd_flr: String(ugrndFlr),
+          totar: totar ? String(totar) : '',
+          useapr_day: useaprDay ? String(useaprDay) : '',
+          structure: structure,
+          purpose: purpose,
+          road_address: roadAddr,
+          jibun_address: jibunAddr,
           geojson: feature?.geometry || null,
           has_photos: !!alreadyHasPhotos,
           photo1_url,
@@ -446,7 +470,6 @@ export default function MapComponent() {
           originalAddress: existingData?.address || bldAddr || '주소 정보 없음'
         };
 
-        // 캐시 저장
         buildingCacheRef.current.set(cacheKey, locationData);
         buildingCacheRef.current.set(bldId, locationData);
 
@@ -575,19 +598,15 @@ export default function MapComponent() {
   };
 
   // ════════════════════════════════════════════════════════════════════
-  // ── 지도 + 로드뷰 동시 분할 모드 (Split View) 핵심 로직 ──
+  // ── 지도 + 로드뷰 동시 분할 모드 (Split View) ──
   // ════════════════════════════════════════════════════════════════════
   const openSplitRoadview = (targetLat?: number, targetLng?: number) => {
     const map = kakaoMapRef.current;
     if (!map || !window.kakao?.maps) return;
 
-    // 분할 모드 켜기
     setIsSplitRoadview(true);
-
-    // 파란색 로드뷰 도로망 라인 지도에 오버레이
     map.addOverlayMapTypeId(window.kakao.maps.MapTypeId.ROADVIEW);
 
-    // 지도 리사이즈 트리거
     setTimeout(() => {
       map.relayout();
       const lat = targetLat || (selectedLocation ? selectedLocation.lat : map.getCenter().getLat());
@@ -613,7 +632,6 @@ export default function MapComponent() {
     setIsSplitRoadview(false);
   };
 
-  // 로드뷰 인스턴스 초기화 또는 특정 좌표로 이동
   const initOrMoveRoadview = (lat: number, lng: number) => {
     if (!window.kakao?.maps || !roadviewContainerRef.current) return;
     const map = kakaoMapRef.current;
@@ -628,7 +646,6 @@ export default function MapComponent() {
     }
     const roadviewClient = roadviewClientRef.current;
 
-    // 가장 가까운 파노라마 ID 검색 (반경 100m)
     roadviewClient.getNearestPanoId(position, 100, (panoId: any) => {
       setRoadviewLoading(false);
       if (panoId) {
@@ -636,13 +653,11 @@ export default function MapComponent() {
           const rv = new window.kakao.maps.Roadview(roadviewContainerRef.current);
           roadviewRef.current = rv;
 
-          // 로드뷰 시점 회전 시 지도 위 마커 화살표 동기화
           window.kakao.maps.event.addListener(rv, 'viewpoint_changed', () => {
             const viewpoint = rv.getViewpoint();
             updateRoadviewMarkerAngle(viewpoint.pan);
           });
 
-          // 로드뷰 내에서 도로 화살표 눌러서 이동 시 지도 마커 동기화
           window.kakao.maps.event.addListener(rv, 'position_changed', () => {
             const rvPos = rv.getPosition();
             if (map) {
@@ -668,7 +683,6 @@ export default function MapComponent() {
     initOrMoveRoadview(lat, lng);
   };
 
-  // 지도 위 로드뷰 시점 마커 (화살표 포함) 갱신
   const updateRoadviewMarkerPosition = (latlng: any) => {
     const map = kakaoMapRef.current;
     if (!map || !window.kakao?.maps) return;
@@ -678,7 +692,7 @@ export default function MapComponent() {
       markerContent.id = 'roadview-walker-marker';
       markerContent.style.cssText = `
         width: 32px; height: 32px;
-        background: rgba(255, 42, 42, 0.9);
+        background: rgba(255, 42, 42, 0.95);
         border: 2px solid white;
         border-radius: 50%;
         display: flex; justify-content: center; align-items: center;
@@ -709,10 +723,30 @@ export default function MapComponent() {
     }
   };
 
+  // 준공년도 및 경과년수 포맷팅 헬퍼
+  const formatApprovalDate = (dateStr?: string) => {
+    if (!dateStr || dateStr.length < 4) return '정보 없음';
+    const clean = dateStr.replace(/[^0-9]/g, '');
+    const year = parseInt(clean.slice(0, 4), 10);
+    const month = clean.length >= 6 ? parseInt(clean.slice(4, 6), 10) : null;
+    const currentYear = new Date().getFullYear();
+    const age = currentYear - year;
+    return `${year}년 ${month ? `${month}월` : ''} (${age}년 경과${age >= 25 ? ' · 노후' : ''})`;
+  };
+
+  // 연면적 평수 환산 헬퍼
+  const formatArea = (areaStr?: string) => {
+    if (!areaStr) return '정보 없음';
+    const num = parseFloat(areaStr);
+    if (isNaN(num)) return areaStr;
+    const pyeong = Math.round(num * 0.3025);
+    return `${num.toLocaleString()} ㎡ (약 ${pyeong.toLocaleString()}평)`;
+  };
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-      
-      {/* ── [분할 모드 상단] 360° 로드뷰 뷰어 창 (모바일 44% 높이) ── */}
+
+      {/* ── [분할 모드 상단] 360° 로드뷰 뷰어 창 ── */}
       {isSplitRoadview && (
         <div style={{
           width: '100%',
@@ -723,7 +757,6 @@ export default function MapComponent() {
           boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
           zIndex: 100
         }}>
-          {/* 상단 툴바 안내선 */}
           <div style={{
             position: 'absolute',
             top: 0, left: 0, right: 0,
@@ -739,7 +772,7 @@ export default function MapComponent() {
                 360° 로드뷰 동시 보기
               </span>
               <span style={{ fontSize: '12px', color: 'white', fontWeight: 600, textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
-                아래 지도에서 원하는 골목을 찍으면 즉시 이동합니다
+                아래 지도에서 원하는 골목을 탭하면 즉시 이동합니다
               </span>
             </div>
             <button
@@ -762,10 +795,8 @@ export default function MapComponent() {
             </button>
           </div>
 
-          {/* 로드뷰 DOM 컨테이너 */}
           <div ref={roadviewContainerRef} style={{ width: '100%', height: '100%' }} />
 
-          {/* 로드뷰 로딩 인디케이터 */}
           {roadviewLoading && (
             <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 10 }}>
               <Loader2 size={32} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite', marginBottom: '8px' }} />
@@ -773,7 +804,6 @@ export default function MapComponent() {
             </div>
           )}
 
-          {/* 로드뷰 에러 알림 배너 */}
           {roadviewError && (
             <div style={{ position: 'absolute', bottom: '12px', left: '16px', right: '16px', backgroundColor: 'rgba(255,42,42,0.9)', color: 'white', padding: '8px 14px', borderRadius: '10px', fontSize: '12px', fontWeight: 600, zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>{roadviewError}</span>
@@ -783,14 +813,14 @@ export default function MapComponent() {
         </div>
       )}
 
-      {/* ── [지도 컨테이너] (분할 모드 시 56% 높이, 평소 100%) ── */}
+      {/* ── [지도 컨테이너] ── */}
       <div style={{ flex: 1, position: 'relative', width: '100%', height: isSplitRoadview ? '56%' : '100%' }}>
         <div
           ref={mapContainerRef}
           style={{ width: '100%', height: '100%', backgroundColor: '#1a1d24' }}
         />
 
-        {/* ── 지도 우측 컨트롤 (위성 스카이뷰 / 360 로드뷰 분할 토글 / 줌 / 현위치) ── */}
+        {/* ── 지도 우측 컨트롤 ── */}
         <div style={{ position: 'absolute', bottom: isSplitRoadview ? '20px' : '140px', right: '14px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '8px', transition: 'bottom 0.3s ease' }}>
           
           {/* 360° 로드뷰 동시 분할 토글 버튼 */}
@@ -889,7 +919,7 @@ export default function MapComponent() {
           </button>
         </div>
 
-        {/* ── Top Bar - Branded Glassmorphism ── */}
+        {/* ── Top Bar ── */}
         {!isSplitRoadview && (
           <div
             className="glass"
@@ -927,7 +957,7 @@ export default function MapComponent() {
           </div>
         )}
 
-        {/* ── Search Bar & Recent History ── */}
+        {/* ── Search Bar & Recent History (검색 시 로드뷰 자동 오픈 연동!) ── */}
         {!isSplitRoadview && (
           <div style={{
             position: 'absolute',
@@ -955,7 +985,7 @@ export default function MapComponent() {
               <Search size={18} color="var(--text-secondary)" />
               <input
                 type="text"
-                placeholder="주소나 건물명으로 검색 (예: 세종대로 110)"
+                placeholder="주소나 건물명 검색 시 로드뷰 자동 실행 (예: 세종대로 110)"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onFocus={() => setIsSearchFocused(true)}
@@ -973,12 +1003,11 @@ export default function MapComponent() {
               {isSearching && <Loader2 size={16} className="animate-spin" color="var(--brand-red)" style={{ animation: 'spin 1s linear infinite' }} />}
             </form>
 
-            {/* 검색 결과 및 최근 검색 기록 드롭다운 */}
             {(searchResults.length > 0 || (isSearchFocused && searchHistory.length > 0 && searchQuery === '')) && (
               <div className="glass-panel" style={{ borderRadius: '16px', overflow: 'hidden', maxHeight: '250px', overflowY: 'auto', marginTop: '4px' }}>
                 {searchResults.length === 0 && (
                   <div style={{ padding: '8px 16px', fontSize: '12px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
-                    최근 검색 기록
+                    최근 검색 기록 (선택 시 해당 건물 로드뷰 자동 실행)
                   </div>
                 )}
                 {(searchResults.length > 0 ? searchResults : searchHistory).map((result, idx) => (
@@ -990,7 +1019,10 @@ export default function MapComponent() {
                       if (searchResults.length > 0) addToHistory(result);
                       setSearchResults([]);
                       setSearchQuery('');
+                      // 지도 이동 및 건물 정보 로드
                       await handleLocationSelect(lat, lng, true);
+                      // 검색 즉시 현장 로드뷰 분할 모드 자동 실행! (소방관 요구사항)
+                      openSplitRoadview(lat, lng);
                     }}
                     style={{
                       padding: '12px 16px',
@@ -1041,13 +1073,12 @@ export default function MapComponent() {
           }}>
             <Loader2 size={16} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
             <span style={{ fontSize: '13px', color: 'white', fontWeight: 700, letterSpacing: '-0.3px' }}>
-              건물 외곽선 및 송수관 정보 스캔 중...
+              국토교통부 건축물대장 및 설비 조회 중...
             </span>
           </div>
         )}
 
-
-        {/* ── Bottom Sheet - Details View ── */}
+        {/* ── [소방 작전용 건축물 상세 브리핑 바텀시트] ── */}
         <div
           className="glass-panel"
           style={{
@@ -1146,9 +1177,10 @@ export default function MapComponent() {
                     </div>
                   ) : (
                     <div>
+                      {/* 건물명 */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                        <MapPinned size={18} color="var(--brand-red)" />
-                        <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>{selectedLocation.name}</h2>
+                        <MapPinned size={20} color="var(--brand-red)" />
+                        <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 800 }}>{selectedLocation.name}</h2>
                         <button
                           title="건물 정보 수정"
                           onClick={() => { setEditName(selectedLocation.name === '이름 없는 건물' ? '' : selectedLocation.name); setEditAddress(selectedLocation.address === '주소 정보 없음' ? '' : selectedLocation.address); setIsEditing(true); }}
@@ -1157,7 +1189,20 @@ export default function MapComponent() {
                           ✏️
                         </button>
                       </div>
-                      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px', wordBreak: 'keep-all' }}>{selectedLocation.address}</p>
+
+                      {/* 도로명 & 지번 주소 */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '4px' }}>
+                        <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '14px', fontWeight: 500 }}>
+                          {selectedLocation.road_address ? `도로명: ${selectedLocation.road_address}` : selectedLocation.address}
+                        </p>
+                        {selectedLocation.jibun_address && (
+                          <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '12px' }}>
+                            지번: {selectedLocation.jibun_address}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* 대원 편집 이력 뱃지 */}
                       {registry.find(r => r.id === selectedLocation.id)?.user_edited_name && (
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginTop: '6px', backgroundColor: 'rgba(30,120,255,0.15)', border: '1px solid rgba(30,120,255,0.3)', borderRadius: '100px', padding: '2px 8px' }}>
                           <span style={{ fontSize: '10px', color: '#6ea8fe' }}>🔵 대원 편집됨 · {new Date(registry.find(r => r.id === selectedLocation.id)!.edited_at!).toLocaleDateString('ko-KR')}</span>
@@ -1165,25 +1210,25 @@ export default function MapComponent() {
                       )}
 
                       {/* ── 현장 360° 로드뷰 동시 분할 뷰 열기 버튼 ── */}
-                      <div style={{ marginTop: '10px' }}>
+                      <div style={{ marginTop: '12px' }}>
                         <button
                           onClick={() => openSplitRoadview(selectedLocation.lat, selectedLocation.lng)}
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
-                            gap: '6px',
-                            padding: '8px 16px',
+                            gap: '8px',
+                            padding: '10px 18px',
                             borderRadius: '100px',
                             backgroundColor: 'rgba(255, 42, 42, 0.15)',
-                            border: '1px solid var(--brand-red)',
+                            border: '1.5px solid var(--brand-red)',
                             color: 'white',
-                            fontSize: '13px',
-                            fontWeight: 700,
+                            fontSize: '14px',
+                            fontWeight: 800,
                             cursor: 'pointer'
                           }}
                           className="btn-hover-effect"
                         >
-                          <Compass size={16} color="var(--brand-red)" />
+                          <Compass size={18} color="var(--brand-red)" />
                           <span>현장 360° 로드뷰 동시 확인</span>
                         </button>
                       </div>
@@ -1198,11 +1243,81 @@ export default function MapComponent() {
                 </button>
               </div>
 
+              {/* ══════════════════════════════════════════════════════ */}
+              {/* 🏛️ [공식 국토교통부 건축물대장 스펙 카드 (자동 연동)] */}
+              {/* ══════════════════════════════════════════════════════ */}
+              <div style={{
+                backgroundColor: 'rgba(255,255,255,0.03)',
+                borderRadius: '16px',
+                border: '1px solid rgba(255,255,255,0.08)',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <ShieldCheck size={16} color="var(--brand-red)" />
+                    <span style={{ fontSize: '13px', fontWeight: 800, color: 'white' }}>건축물대장 소방 제원 정보</span>
+                  </div>
+                  <span style={{ fontSize: '11px', color: '#00e676', backgroundColor: 'rgba(0,230,118,0.1)', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>국토교통부 공식</span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  {/* 1. 층수 (지상 / 지하) */}
+                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
+                      <Building size={13} color="var(--brand-red)" />
+                      <span>층수 (지상 · 지하)</span>
+                    </div>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: 'white' }}>
+                      지상 {selectedLocation.floors || '?'}층 · <span style={{ color: selectedLocation.ugrnd_flr && selectedLocation.ugrnd_flr !== '0' ? '#ff7043' : 'var(--text-secondary)' }}>지하 {selectedLocation.ugrnd_flr || '0'}층</span>
+                    </div>
+                  </div>
+
+                  {/* 2. 연면적 (평수 환산) */}
+                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
+                      <Ruler size={13} color="var(--brand-red)" />
+                      <span>총 연면적</span>
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'white' }}>
+                      {formatArea(selectedLocation.totar)}
+                    </div>
+                  </div>
+
+                  {/* 3. 사용승인일 (준공년도 & 경과년수) */}
+                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
+                      <Calendar size={13} color="var(--brand-red)" />
+                      <span>사용승인일자</span>
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'white' }}>
+                      {formatApprovalDate(selectedLocation.useapr_day)}
+                    </div>
+                  </div>
+
+                  {/* 4. 건물 주구조 / 용도 */}
+                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
+                      <ShieldCheck size={13} color="var(--brand-red)" />
+                      <span>주구조 · 주용도</span>
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {selectedLocation.structure || selectedLocation.purpose ? `${selectedLocation.structure || '-'} / ${selectedLocation.purpose || '-'}` : '정보 없음'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ══════════════════════════════════════════════════════ */}
+              {/* 📸 송수관 현장 등록 사진 및 위치 특징 */}
+              {/* ══════════════════════════════════════════════════════ */}
               {selectedLocation.has_photos ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                      {isEditingCircles ? '사진을 터치하여 송수구 위치를 지정하세요' : '연결송수관 위치가 표시된 사진입니다'}
+                      {isEditingCircles ? '사진을 터치하여 송수구 위치를 지정하세요' : '연결송수관 현장 등록 데이터'}
                     </div>
                     <div style={{ display: 'flex', gap: '8px' }}>
                       {!isEditingCircles && (
@@ -1248,6 +1363,19 @@ export default function MapComponent() {
                     </div>
                   </div>
 
+                  {/* ── 현장 특이사항 및 위치 힌트 ── */}
+                  <div style={{ backgroundColor: 'var(--surface)', padding: '16px 20px', borderRadius: '16px', border: '1px solid var(--border)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.2)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                      <div style={{ width: '24px', height: '24px', borderRadius: '6px', backgroundColor: 'rgba(255,170,0,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Info size={14} color="var(--warning)" />
+                      </div>
+                      <span style={{ fontWeight: 800, fontSize: '14px', color: 'var(--text-primary)' }}>송수관 위치 특징 & 현장 특이사항</span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.6, color: 'white', fontWeight: 500 }}>
+                      {selectedLocation.field_note || '등록된 위치 특징 메모가 없습니다.'}
+                    </p>
+                  </div>
+
                   {/* ── 사진 수직 배치 (원본 비율 유지) ── */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                     <ImageWithCircle
@@ -1277,18 +1405,6 @@ export default function MapComponent() {
                       />
                     )}
                   </div>
-
-                  <div style={{ backgroundColor: 'var(--surface)', padding: '20px', borderRadius: '16px', border: '1px solid var(--border)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.2)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                      <div style={{ width: '24px', height: '24px', borderRadius: '6px', backgroundColor: 'rgba(255,170,0,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Info size={14} color="var(--warning)" />
-                      </div>
-                      <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>현장 특이사항</span>
-                    </div>
-                    <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-                      {selectedLocation.field_note || '등록된 메모가 없습니다.'}
-                    </p>
-                  </div>
                 </div>
               ) : (
                 <div style={{
@@ -1296,7 +1412,7 @@ export default function MapComponent() {
                   flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  padding: '40px 20px',
+                  padding: '36px 20px',
                   backgroundColor: 'var(--surface)',
                   borderRadius: '16px',
                   border: '1px dashed var(--border)',
@@ -1306,12 +1422,12 @@ export default function MapComponent() {
                     <ImageIcon size={32} color="var(--brand-red)" />
                   </div>
                   <div style={{ textAlign: 'center' }}>
-                    <h3 style={{ margin: '0 0 8px 0', fontSize: '18px', fontWeight: 600 }}>등록된 사진이 없습니다</h3>
-                    <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px' }}>이 건물에 대한 송수관 전경/상세 사진을 등록해주세요.</p>
+                    <h3 style={{ margin: '0 0 6px 0', fontSize: '17px', fontWeight: 700 }}>등록된 송수관 사진이 없습니다</h3>
+                    <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '13px' }}>현장 출동 시 건물 전경 및 송수관 상세 사진을 등록해 주세요.</p>
                   </div>
-                  <button className="btn-primary" onClick={() => setShowUploadModal(true)} style={{ width: '100%', marginTop: '8px' }}>
-                    <Camera size={20} />
-                    <span>사진 촬영 및 업로드</span>
+                  <button className="btn-primary" onClick={() => setShowUploadModal(true)} style={{ width: '100%', marginTop: '4px' }}>
+                    <Camera size={18} />
+                    <span>송수관 사진 & 위치 특징 등록</span>
                   </button>
                 </div>
               )}
@@ -1320,7 +1436,7 @@ export default function MapComponent() {
         </div>
       </div>
 
-      {/* ── 현장 데이터 업로드 모달 (개선: 1장만 있어도 등록 가능 & upsert 안전 저장) ── */}
+      {/* ── 현장 데이터 업로드 모달 (소방관용 원터치 퀵 태그 탑재!) ── */}
       {showUploadModal && (
         <div style={{
           position: 'fixed',
@@ -1336,7 +1452,7 @@ export default function MapComponent() {
           <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <div>
-                <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>현장 사진 및 설비 등록</h2>
+                <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>현장 사진 및 위치 특징 등록</h2>
                 <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
                   {selectedLocation?.name} · 최소 1장 이상 등록 가능
                 </p>
@@ -1353,7 +1469,7 @@ export default function MapComponent() {
                   <span>1. 건물 전체 전경 사진</span>
                   <span style={{ color: 'var(--brand-red)', fontSize: '11px' }}>권장</span>
                 </label>
-                <label style={{ height: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo1 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
+                <label style={{ height: '76px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo1 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
                   <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto1(e.target.files?.[0] ?? null)} />
                   <Camera size={22} color={photo1 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
                   <span style={{ fontSize: '12px', color: photo1 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: photo1 ? 700 : 400 }}>
@@ -1368,7 +1484,7 @@ export default function MapComponent() {
                   <span>2. 송수관 근접 상세 사진</span>
                   <span style={{ color: 'var(--brand-red)', fontSize: '11px' }}>권장</span>
                 </label>
-                <label style={{ height: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo2 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
+                <label style={{ height: '76px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo2 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
                   <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto2(e.target.files?.[0] ?? null)} />
                   <Camera size={22} color={photo2 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
                   <span style={{ fontSize: '12px', color: photo2 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: photo2 ? 700 : 400 }}>
@@ -1383,7 +1499,7 @@ export default function MapComponent() {
                   <span>3. 지도 방면 표시 사진 (캡쳐 등)</span>
                   <span style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>선택</span>
                 </label>
-                <label style={{ height: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo3 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
+                <label style={{ height: '76px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo3 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
                   <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto3(e.target.files?.[0] ?? null)} />
                   <Camera size={22} color={photo3 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
                   <span style={{ fontSize: '12px', color: photo3 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: photo3 ? 700 : 400 }}>
@@ -1392,18 +1508,47 @@ export default function MapComponent() {
                 </label>
               </div>
 
+              {/* ── 원터치 퀵 위치 특징 태그 ── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 600 }}>원터치 위치 특징 태그 (탭하여 입력)</span>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {QUICK_TAGS.map((tag, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setFieldNote(prev => prev ? `${prev}, ${tag}` : tag);
+                      }}
+                      style={{
+                        padding: '5px 10px',
+                        borderRadius: '100px',
+                        backgroundColor: 'rgba(255,255,255,0.06)',
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        color: 'white',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                      className="btn-hover-effect"
+                    >
+                      + {tag}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* 현장 메모 */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', fontWeight: 600 }}>현장 특이사항 메모</label>
+                <label style={{ fontSize: '13px', fontWeight: 600 }}>송수관 위치 특징 & 현장 특이사항 메모</label>
                 <textarea
-                  placeholder="예: 우측 지하주차장 입구 1m 화단 뒤, 야간 식별 주의 등"
+                  placeholder="예: 정문 우측 1m 화단 뒤쪽, 쌍구형(65mm), 야간 식별 주의 등"
                   value={fieldNote}
                   onChange={e => setFieldNote(e.target.value)}
                   style={{ width: '100%', height: '70px', backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px', color: 'white', fontFamily: 'inherit', resize: 'none', boxSizing: 'border-box', fontSize: '13px' }}
                 />
               </div>
 
-              {/* 등록 버튼 (최소 1장 이상이면 활성화!) */}
+              {/* 등록 버튼 */}
               <button
                 className="btn-primary"
                 disabled={(!photo1 && !photo2 && !photo3) || isUploading}
@@ -1442,13 +1587,11 @@ export default function MapComponent() {
                       );
                     }
 
-                    // 파일 업로드 수행
                     const results = await Promise.all(uploadPromises);
                     for (const res of results) {
                       if (res.error) throw new Error('사진 파일 업로드 실패: ' + res.error.message);
                     }
 
-                    // DB에 upsert (행이 없더라도 새로 생성하여 안전 저장!)
                     const saveData = {
                       id: selectedLocation.id,
                       name: selectedLocation.originalName || selectedLocation.name,
@@ -1472,7 +1615,6 @@ export default function MapComponent() {
 
                     if (dbError) throw new Error('DB 저장 실패: ' + dbError.message);
 
-                    // 로컬 뷰 즉시 반영
                     const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
                     const ts = Date.now();
                     setSelectedLocation((prev: any) => prev ? {
@@ -1584,7 +1726,7 @@ export default function MapComponent() {
             </div>
 
             <div style={{ marginTop: 'auto', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>
-              Fire-Link: Seoul v1.2 (Kakao Live Split Roadview)
+              Fire-Link: Seoul v1.3 (Official Registry Auto-Sync)
             </div>
           </div>
         </div>
