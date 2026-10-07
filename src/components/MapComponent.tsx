@@ -176,11 +176,37 @@ export default function MapComponent() {
   const [showGuide, setShowGuide] = useState(false);
   const [showStation, setShowStation] = useState(false);
 
-  // Search history in localStorage
+  // Search history in localStorage (안전한 문자열 변환 적용)
   const [searchHistory, setSearchHistory] = useState<any[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('fire-link-search-history');
-      return saved ? JSON.parse(saved) : [];
+      try {
+        const saved = localStorage.getItem('fire-link-search-history');
+        if (!saved) return [];
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.map(item => {
+            if (!item || typeof item !== 'object') return null;
+            // 과거 V-World 버전 등에서 저장된 주소 객체 { road, parcel } 완벽 정제
+            const addressStr = typeof item.address === 'string'
+              ? item.address
+              : (item.address?.road || item.address?.parcel || item.road_address_name || item.address_name || '');
+            const nameStr = item.name || item.place_name || item.title || addressStr || '위치 정보';
+            const xVal = item.x || item.point?.x || '';
+            const yVal = item.y || item.point?.y || '';
+            return {
+              name: String(nameStr),
+              place_name: String(nameStr),
+              address: String(addressStr),
+              road_address_name: String(addressStr),
+              address_name: String(addressStr),
+              x: String(xVal),
+              y: String(yVal),
+            };
+          }).filter(Boolean);
+        }
+      } catch (e) {
+        console.error('검색 기록 로드 오류:', e);
+      }
     }
     return [];
   });
@@ -190,9 +216,27 @@ export default function MapComponent() {
   }, [searchHistory]);
 
   const addToHistory = (item: any) => {
+    if (!item) return;
+    const addressStr = typeof item.address === 'string'
+      ? item.address
+      : (item.road_address_name || item.address_name || (typeof item.address === 'object' ? (item.address?.road || item.address?.parcel) : '') || '');
+    const nameStr = item.name || item.place_name || item.title || addressStr || '검색 기록';
+    const xVal = item.x || item.point?.x || '';
+    const yVal = item.y || item.point?.y || '';
+
+    const cleanItem = {
+      name: String(nameStr),
+      place_name: String(nameStr),
+      address: String(addressStr),
+      road_address_name: String(addressStr),
+      address_name: String(addressStr),
+      x: String(xVal),
+      y: String(yVal),
+    };
+
     setSearchHistory(prev => {
-      const filtered = prev.filter(p => p.address !== item.address);
-      return [item, ...filtered].slice(0, 10);
+      const filtered = prev.filter(p => p.address !== cleanItem.address && p.name !== cleanItem.name);
+      return [cleanItem, ...filtered].slice(0, 10);
     });
   };
 
@@ -388,27 +432,47 @@ export default function MapComponent() {
     }
   };
 
-  // ── 카카오 키워드/주소 검색 ──
-  const handleSearch = (e?: React.FormEvent) => {
+  // ── 카카오 키워드/주소 검색 (에러 방어 및 폴백 지원) ──
+  const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const query = searchQuery.trim();
+    if (!query) return;
 
     setIsSearching(true);
-    if (!geocoderRef.current) {
-      setIsSearching(false);
-      return;
-    }
-
-    // 카카오 장소/주소 검색 실행
-    const places = new window.kakao.maps.services.Places();
-    places.keywordSearch(searchQuery, (data: any, status: any) => {
-      setIsSearching(false);
-      if (status === window.kakao.maps.services.Status.OK) {
-        setSearchResults(data);
-      } else {
-        // 주소 검색 재시도
-        geocoderRef.current.addressSearch(searchQuery, (addrData: any, addrStatus: any) => {
-          if (addrStatus === window.kakao.maps.services.Status.OK) {
+    try {
+      if (typeof window !== 'undefined' && window.kakao?.maps?.services?.Places) {
+        const places = new window.kakao.maps.services.Places();
+        places.keywordSearch(query, (data: any, status: any) => {
+          if (status === window.kakao.maps.services.Status.OK && data && data.length > 0) {
+            setIsSearching(false);
+            setSearchResults(data);
+          } else if (geocoderRef.current) {
+            // 주소 검색 재시도
+            geocoderRef.current.addressSearch(query, (addrData: any, addrStatus: any) => {
+              setIsSearching(false);
+              if (addrStatus === window.kakao.maps.services.Status.OK && addrData && addrData.length > 0) {
+                setSearchResults(addrData.map((item: any) => ({
+                  place_name: item.road_address?.building_name || item.address_name,
+                  address_name: item.address_name,
+                  road_address_name: item.road_address?.address_name,
+                  x: item.x,
+                  y: item.y
+                })));
+              } else {
+                setSearchResults([]);
+                alert('검색 결과가 없습니다.');
+              }
+            });
+          } else {
+            setIsSearching(false);
+            setSearchResults([]);
+            alert('검색 결과가 없습니다.');
+          }
+        });
+      } else if (geocoderRef.current) {
+        geocoderRef.current.addressSearch(query, (addrData: any, addrStatus: any) => {
+          setIsSearching(false);
+          if (addrStatus === window.kakao.maps.services.Status.OK && addrData && addrData.length > 0) {
             setSearchResults(addrData.map((item: any) => ({
               place_name: item.road_address?.building_name || item.address_name,
               address_name: item.address_name,
@@ -421,8 +485,13 @@ export default function MapComponent() {
             alert('검색 결과가 없습니다.');
           }
         });
+      } else {
+        setIsSearching(false);
       }
-    });
+    } catch (err) {
+      console.error('검색 실행 오류:', err);
+      setIsSearching(false);
+    }
   };
 
   // 현위치로 이동 (GPS)
@@ -799,41 +868,59 @@ export default function MapComponent() {
 
             {(searchResults.length > 0 || (isSearchFocused && searchHistory.length > 0 && searchQuery === '')) && (
               <div className="glass-panel" style={{ borderRadius: '14px', overflow: 'hidden', maxHeight: '220px', overflowY: 'auto' }}>
-                {(searchResults.length > 0 ? searchResults : searchHistory).map((result, idx) => (
-                  <div
-                    key={idx}
-                    onClick={() => {
-                      const lat = parseFloat(result.y);
-                      const lng = parseFloat(result.x);
-                      addToHistory({
-                        name: result.place_name || result.address_name,
-                        address: result.road_address_name || result.address_name,
-                        x: result.x,
-                        y: result.y
-                      });
-                      setSearchResults([]);
-                      setSearchQuery('');
-                      // 지도가 해당 좌표로 부드럽게 이동하고 하단 미니 카드만 활성화!
-                      handleLocationSelect(lat, lng, true);
-                    }}
-                    style={{
-                      padding: '10px 14px',
-                      borderBottom: '1px solid var(--border)',
-                      cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '2px'
-                    }}
-                    className="btn-hover-effect"
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <MapPinned size={14} color="var(--brand-red)" />
-                      <span style={{ fontSize: '13px', fontWeight: 700 }}>
-                        {result.place_name || result.name || result.address_name}
-                      </span>
+                {(searchResults.length > 0 ? searchResults : searchHistory).map((result, idx) => {
+                  const displayName = String(
+                    result.place_name ||
+                    result.name ||
+                    result.title ||
+                    result.address_name ||
+                    (typeof result.address === 'string' ? result.address : '') ||
+                    '검색 결과'
+                  );
+                  const displayAddress = typeof result.address === 'string'
+                    ? result.address
+                    : (result.road_address_name || result.address_name || result.address?.road || result.address?.parcel || '');
+                  const lat = parseFloat(result.y || result.point?.y || '0');
+                  const lng = parseFloat(result.x || result.point?.x || '0');
+
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => {
+                        if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
+                          addToHistory({
+                            name: displayName,
+                            address: displayAddress,
+                            x: String(lng),
+                            y: String(lat)
+                          });
+                          setSearchResults([]);
+                          setSearchQuery('');
+                          // 지도가 해당 좌표로 부드럽게 이동하고 하단 미니 카드만 활성화!
+                          handleLocationSelect(lat, lng, true);
+                        }
+                      }}
+                      style={{
+                        padding: '10px 14px',
+                        borderBottom: '1px solid var(--border)',
+                        cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '2px'
+                      }}
+                      className="btn-hover-effect"
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <MapPinned size={14} color="var(--brand-red)" />
+                        <span style={{ fontSize: '13px', fontWeight: 700 }}>
+                          {displayName}
+                        </span>
+                      </div>
+                      {displayAddress ? (
+                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                          {String(displayAddress)}
+                        </span>
+                      ) : null}
                     </div>
-                    <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                      {result.road_address_name || result.address_name || result.address}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
