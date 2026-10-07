@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers, Eye, Compass, Building, Calendar, ShieldCheck, Ruler, CheckCircle2 } from 'lucide-react';
+import { Camera, AlertCircle, Image as ImageIcon, MapPinned, Info, X, Loader2, LocateFixed, Menu, History, Search, Layers, Eye, Compass, Building, Calendar, ShieldCheck, Ruler, CheckCircle2, ChevronUp, ChevronDown, Edit3 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface BuildingRecord {
@@ -11,11 +11,17 @@ interface BuildingRecord {
   address: string;
   lat: number;
   lng: number;
-  floors: string;
+  floors?: string;
+  ugrnd_flr?: string;
+  totar?: string;
+  useapr_day?: string;
+  structure?: string;
+  purpose?: string;
+  road_address?: string;
+  jibun_address?: string;
   has_photos: boolean;
   visited_at: string;
   registered_at?: string;
-  // Wiki edit fields
   user_edited_name?: string;
   user_edited_address?: string;
   edited_by?: string;
@@ -25,24 +31,14 @@ interface BuildingRecord {
   photo2_x?: number;
   photo2_y?: number;
   field_note?: string;
-  // Actual file paths in storage
   photo1_path?: string;
   photo2_path?: string;
   photo3_path?: string;
-  // Architecture specs from official registry
-  ugrnd_flr?: string;
-  totar?: string;
-  useapr_day?: string;
-  structure?: string;
-  purpose?: string;
-  road_address?: string;
-  jibun_address?: string;
 }
 
 interface SelectedLocation extends BuildingRecord {
-  geojson: any;
-  originalName: string;
-  originalAddress: string;
+  photo1_url?: string | null;
+  photo2_url?: string | null;
   photo3_url?: string | null;
 }
 
@@ -146,43 +142,39 @@ function ImageWithCircle({ src, circle, onCircleSet, isEditing, label, allowCirc
 export default function MapComponent() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const kakaoMapRef = useRef<any>(null);
-  const currentOverlaysRef = useRef<any[]>([]);
+  const geocoderRef = useRef<any>(null);
+  const currentMarkerRef = useRef<any>(null);
 
   // Split Roadview refs
   const roadviewContainerRef = useRef<HTMLDivElement>(null);
   const roadviewRef = useRef<any>(null);
   const roadviewClientRef = useRef<any>(null);
   const roadviewMarkerRef = useRef<any>(null);
-  const buildingCacheRef = useRef<Map<string, SelectedLocation>>(new Map());
 
-  const [mapLoaded, setMapLoaded] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<SelectedLocation | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [showDetailSheet, setShowDetailSheet] = useState(false); // 상세 정보 및 사진 펼치기
+  const [showEditModal, setShowEditModal] = useState(false);     // 정보/사진 직접 입력/제보 모달
   const [isUploading, setIsUploading] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [isSkyview, setIsSkyview] = useState(false);
   const [locating, setLocating] = useState(false);
 
-  // ── 지도 + 로드뷰 동시 분할 모드 (Split View) 상태 ──
+  // ── 지도 + 로드뷰 동시 분할 모드 (클릭했을 때만 활성화!) ──
   const [isSplitRoadview, setIsSplitRoadview] = useState(false);
   const [roadviewLoading, setRoadviewLoading] = useState(false);
   const [roadviewError, setRoadviewError] = useState<string | null>(null);
-
-  // Menu panel states
-  const [showUnregistered, setShowUnregistered] = useState(false);
-  const [showStats, setShowStats] = useState(false);
-  const [showOffline, setShowOffline] = useState(false);
-  const [showGuide, setShowGuide] = useState(false);
-  const [showStation, setShowStation] = useState(false);
-  const [offlineProgress, setOfflineProgress] = useState(0);
-  const [offlineDownloading, setOfflineDownloading] = useState(false);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+
+  // Menu states
+  const [showUnregistered, setShowUnregistered] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [showStation, setShowStation] = useState(false);
 
   // Search history in localStorage
   const [searchHistory, setSearchHistory] = useState<any[]>(() => {
@@ -199,12 +191,12 @@ export default function MapComponent() {
 
   const addToHistory = (item: any) => {
     setSearchHistory(prev => {
-      const filtered = prev.filter(p => p.address?.parcel !== item.address?.parcel);
+      const filtered = prev.filter(p => p.address !== item.address);
       return [item, ...filtered].slice(0, 10);
     });
   };
 
-  // Building registry (real data from Supabase)
+  // Building registry (Supabase DB)
   const [registry, setRegistry] = useState<BuildingRecord[]>([]);
 
   // Device UUID
@@ -230,21 +222,27 @@ export default function MapComponent() {
 
   useEffect(() => { fetchRegistry(); }, []);
 
-  // Upload photo states
+  // ── 대원/제보자가 직접 입력하는 폼 상태 ──
+  const [formName, setFormName] = useState('');
+  const [formRoadAddress, setFormRoadAddress] = useState('');
+  const [formJibunAddress, setFormJibunAddress] = useState('');
+  const [formGrndFlr, setFormGrndFlr] = useState('');
+  const [formUgrndFlr, setFormUgrndFlr] = useState('');
+  const [formTotar, setFormTotar] = useState('');
+  const [formUseaprDay, setFormUseaprDay] = useState('');
+  const [formStructure, setFormStructure] = useState('');
+  const [formPurpose, setFormPurpose] = useState('');
+  const [formFieldNote, setFormFieldNote] = useState('');
+
+  // 사진 업로드 상태
   const [photo1, setPhoto1] = useState<File | null>(null);
   const [photo2, setPhoto2] = useState<File | null>(null);
   const [photo3, setPhoto3] = useState<File | null>(null);
-  const [fieldNote, setFieldNote] = useState('');
 
-  // Wiki edit mode state
-  const [editName, setEditName] = useState('');
-  const [editAddress, setEditAddress] = useState('');
-
-  // Circle coordinates state
+  // 위치 동그라미 지정 상태
   const [p1Circle, setP1Circle] = useState<{ x: number, y: number } | null>(null);
   const [p2Circle, setP2Circle] = useState<{ x: number, y: number } | null>(null);
   const [isEditingCircles, setIsEditingCircles] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
 
   // ── 카카오 지도 스크립트 로드 및 초기화 ──
   useEffect(() => {
@@ -262,8 +260,9 @@ export default function MapComponent() {
         };
         const map = new window.kakao.maps.Map(mapContainerRef.current, options);
         kakaoMapRef.current = map;
-        setMapLoaded(true);
+        geocoderRef.current = new window.kakao.maps.services.Geocoder();
 
+        // 지도 클릭 시
         window.kakao.maps.event.addListener(map, 'click', (mouseEvent: any) => {
           const latlng = mouseEvent.latLng;
           if (splitRoadviewRef.current) {
@@ -282,7 +281,7 @@ export default function MapComponent() {
       if (!existingScript) {
         const script = document.createElement('script');
         script.id = 'kakao-map-script';
-        script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${kakaoApiKey}&autoload=false`;
+        script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${kakaoApiKey}&autoload=false&libraries=services`;
         script.async = true;
         script.onload = () => initKakao();
         document.head.appendChild(script);
@@ -297,184 +296,83 @@ export default function MapComponent() {
     splitRoadviewRef.current = isSplitRoadview;
   }, [isSplitRoadview]);
 
-  // ── 카카오 지도 위에 GeoJSON 건물 폴리곤 그리기 ──
-  const drawGeoJson = (geojson: any) => {
-    const map = kakaoMapRef.current;
-    if (!map || !window.kakao?.maps) return;
-
-    currentOverlaysRef.current.forEach(item => item.setMap(null));
-    currentOverlaysRef.current = [];
-
-    if (!geojson) return;
-
-    const { type, coordinates } = geojson;
-
-    if (type === 'Polygon') {
-      const paths = coordinates[0].map(([lng, lat]: [number, number]) => new window.kakao.maps.LatLng(lat, lng));
-      const polygon = new window.kakao.maps.Polygon({
-        path: paths,
-        strokeWeight: 3,
-        strokeColor: '#ff2a2a',
-        strokeOpacity: 0.95,
-        fillColor: '#ff2a2a',
-        fillOpacity: 0.4
-      });
-      polygon.setMap(map);
-      currentOverlaysRef.current.push(polygon);
-    } else if (type === 'MultiPolygon') {
-      coordinates.forEach((poly: any) => {
-        const paths = poly[0].map(([lng, lat]: [number, number]) => new window.kakao.maps.LatLng(lat, lng));
-        const polygon = new window.kakao.maps.Polygon({
-          path: paths,
-          strokeWeight: 3,
-          strokeColor: '#ff2a2a',
-          strokeOpacity: 0.95,
-          fillColor: '#ff2a2a',
-          fillOpacity: 0.4
-        });
-        polygon.setMap(map);
-        currentOverlaysRef.current.push(polygon);
-      });
-    } else if (type === 'Point') {
-      const [lng, lat] = coordinates;
-      const circle = new window.kakao.maps.Circle({
-        center: new window.kakao.maps.LatLng(lat, lng),
-        radius: 12,
-        strokeWeight: 2,
-        strokeColor: '#ffffff',
-        strokeOpacity: 1,
-        fillColor: '#ff2a2a',
-        fillOpacity: 0.8
-      });
-      circle.setMap(map);
-      currentOverlaysRef.current.push(circle);
-    }
-  };
-
-  // ── 위치 선택 및 V-World 정부 건축물대장 데이터 자동 파싱 ──
+  // ── 카카오 지오코더 기반 0.05초 초고속 건물 정보 매핑 ──
   const handleLocationSelect = async (lat: number, lng: number, shouldMoveMap = false) => {
     const map = kakaoMapRef.current;
     if (map && shouldMoveMap && window.kakao?.maps) {
-      const targetLatLng = new window.kakao.maps.LatLng(lat, lng);
-      map.panTo(targetLatLng);
+      map.panTo(new window.kakao.maps.LatLng(lat, lng));
     }
 
-    // 1. 초고속 인메모리 캐시 확인 (0.01초 즉시 반응)
-    const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
-    const cached = buildingCacheRef.current.get(cacheKey);
-    if (cached) {
-      setSelectedLocation(cached);
-      drawGeoJson(cached.geojson);
-      return;
-    }
+    const posId = `bld_${lat.toFixed(5)}_${lng.toFixed(5)}`;
 
-    setIsLoading(true);
-
-    try {
-      const response = await fetch(`/api/vworld?lat=${lat}&lng=${lng}`);
-      const data = await response.json();
-
-      if (data.error) {
-        throw new Error(data.error);
+    // 지도 위 선택 마커 찍기
+    if (map && window.kakao?.maps) {
+      if (currentMarkerRef.current) {
+        currentMarkerRef.current.setMap(null);
       }
+      const marker = new window.kakao.maps.Marker({
+        position: new window.kakao.maps.LatLng(lat, lng),
+        map: map
+      });
+      currentMarkerRef.current = marker;
+    }
 
-      if (data?.response?.status === 'OK' && data.response.result?.featureCollection?.features?.length > 0) {
-        const feature = data.response.result.featureCollection.features[0];
-        const props = feature.properties || {};
-        const bldId = feature.id;
+    // 1. 카카오 지오코더로 도로명/지번/건물명 0.05초 즉시 역지오코딩
+    if (geocoderRef.current) {
+      geocoderRef.current.coord2Address(lng, lat, async (result: any, status: any) => {
+        let bldName = '선택한 위치';
+        let roadAddr = '';
+        let jibunAddr = '';
 
-        const cachedById = buildingCacheRef.current.get(bldId);
-        if (cachedById) {
-          setSelectedLocation(cachedById);
-          drawGeoJson(cachedById.geojson);
-          setIsLoading(false);
-          return;
+        if (status === window.kakao.maps.services.Status.OK && result[0]) {
+          roadAddr = result[0].road_address?.address_name || '';
+          jibunAddr = result[0].address?.address_name || '';
+          bldName = result[0].road_address?.building_name || roadAddr || jibunAddr || '건물';
         }
 
-        // 국토교통부 건축물대장 정밀 속성 파싱
-        const bldName = props.bld_nm || '이름 없는 건물';
-        const roadAddr = props.road_adres || '';
-        const jibunAddr = props.jibun_adres || '';
-        const bldAddr = roadAddr || jibunAddr || '주소 정보 없음';
-        const grndFlr = props.grnd_flr || '?';
-        const ugrndFlr = props.ugrnd_flr || '0';
-        const totar = props.totar || '';
-        const useaprDay = props.useapr_day || '';
-        const structure = props.strct_cd_nm || '';
-        const purpose = props.main_purps_cd_nm || '';
-
-        // Supabase에서 대원 사진 및 메모 조회
-        const { data: existingData, error: fetchError } = await supabase
-          .from('buildings')
-          .select('*')
-          .eq('id', bldId)
-          .maybeSingle();
-
-        const alreadyHasPhotos = existingData?.has_photos ?? false;
-        const currentName = existingData?.user_edited_name || existingData?.name || bldName;
-        const currentAddress = existingData?.user_edited_address || existingData?.address || bldAddr;
-
-        // 방문 기록 백그라운드 저장
-        if (!existingData && !fetchError) {
-          const newRecord = {
-            id: bldId,
-            name: bldName,
-            address: bldAddr,
-            lat, lng, floors: grndFlr,
-            has_photos: false,
-            visited_at: new Date().toISOString(),
-            device_id: deviceId
-          };
-          supabase.from('buildings').upsert(newRecord).then(() => {
-            setRegistry(prev => [...prev.filter(r => r.id !== bldId), newRecord as BuildingRecord]);
-          }).catch(console.error);
-        }
+        // 2. Supabase에서 대원들이 등록한 현장 데이터 조회 (ID 또는 근사 좌표)
+        const threshold = 0.0002;
+        const existingData = registry.find(r =>
+          r.id === posId ||
+          (Math.abs(r.lat - lat) < threshold && Math.abs(r.lng - lng) < threshold)
+        );
 
         const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
         const buildPhotoUrl = (path: string | undefined | null) => {
           if (!path) return null;
           return `${baseUrl}/storage/v1/object/public/building-photos/${path}?t=${Date.now()}`;
         };
-        const photo1_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo1_path) : null;
-        const photo2_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo2_path) : null;
-        const photo3_url = alreadyHasPhotos ? buildPhotoUrl(existingData?.photo3_path) : null;
 
         const locationData: SelectedLocation = {
-          id: bldId,
-          lat: lat || 0,
-          lng: lng || 0,
-          name: currentName || '이름 없는 건물',
-          address: currentAddress || '주소 정보 없음',
-          floors: String(grndFlr),
-          ugrnd_flr: String(ugrndFlr),
-          totar: totar ? String(totar) : '',
-          useapr_day: useaprDay ? String(useaprDay) : '',
-          structure: structure,
-          purpose: purpose,
+          id: existingData?.id || posId,
+          lat, lng,
+          name: existingData?.user_edited_name || existingData?.name || bldName,
+          address: existingData?.user_edited_address || roadAddr || jibunAddr || '주소 정보 없음',
           road_address: roadAddr,
           jibun_address: jibunAddr,
-          geojson: feature?.geometry || null,
-          has_photos: !!alreadyHasPhotos,
-          photo1_url,
-          photo2_url,
-          photo3_url,
+          floors: existingData?.floors || '',
+          ugrnd_flr: existingData?.ugrnd_flr || '',
+          totar: existingData?.totar || '',
+          useapr_day: existingData?.useapr_day || '',
+          structure: existingData?.structure || '',
+          purpose: existingData?.purpose || '',
+          has_photos: !!existingData?.has_photos,
+          photo1_url: buildPhotoUrl(existingData?.photo1_path),
+          photo2_url: buildPhotoUrl(existingData?.photo2_path),
+          photo3_url: buildPhotoUrl(existingData?.photo3_path),
+          photo1_path: existingData?.photo1_path,
+          photo2_path: existingData?.photo2_path,
+          photo3_path: existingData?.photo3_path,
           field_note: existingData?.field_note || '',
           photo1_x: existingData?.photo1_x,
           photo1_y: existingData?.photo1_y,
           photo2_x: existingData?.photo2_x,
           photo2_y: existingData?.photo2_y,
-          photo1_path: existingData?.photo1_path,
-          photo2_path: existingData?.photo2_path,
-          photo3_path: existingData?.photo3_path,
-          originalName: existingData?.name || bldName || '이름 없는 건물',
-          originalAddress: existingData?.address || bldAddr || '주소 정보 없음'
+          visited_at: new Date().toISOString()
         };
 
-        buildingCacheRef.current.set(cacheKey, locationData);
-        buildingCacheRef.current.set(bldId, locationData);
-
         setSelectedLocation(locationData);
-        drawGeoJson(feature?.geometry);
+        setShowDetailSheet(false); // 기본 상태는 슬림 미니 바!
 
         if (existingData?.photo1_x !== undefined && existingData?.photo1_y !== undefined) {
           setP1Circle({ x: existingData.photo1_x, y: existingData.photo1_y });
@@ -486,67 +384,45 @@ export default function MapComponent() {
         } else {
           setP2Circle(null);
         }
-      } else {
-        const threshold = 0.00015;
-        const existingManual = registry.find(r =>
-          r.id.startsWith('manual-') &&
-          Math.abs(r.lat - lat) < threshold &&
-          Math.abs(r.lng - lng) < threshold
-        );
-
-        if (existingManual) {
-          setSelectedLocation({
-            ...existingManual,
-            name: existingManual.user_edited_name || existingManual.name,
-            address: existingManual.user_edited_address || existingManual.address,
-            geojson: null,
-            originalName: '건물 정보 없음',
-            originalAddress: 'V-World 데이터 없음'
-          });
-          drawGeoJson(null);
-        } else {
-          const manualId = `manual-${lat.toFixed(6)}-${lng.toFixed(6)}`;
-          setSelectedLocation({
-            id: manualId, lat, lng,
-            name: '건물 정보 없음',
-            address: '선택한 위치에 V-World 건물 데이터가 없습니다.',
-            geojson: null,
-            has_photos: false,
-            originalName: '건물 정보 없음',
-            originalAddress: 'V-World 데이터 없음'
-          });
-          drawGeoJson(null);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to fetch location data:", error);
-      alert('데이터를 불러오는데 실패했습니다.');
-    } finally {
-      setIsLoading(false);
+      });
     }
   };
 
-  const handleSearch = async (e?: React.FormEvent) => {
+  // ── 카카오 키워드/주소 검색 ──
+  const handleSearch = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
 
     setIsSearching(true);
-    try {
-      const response = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
-      const data = await response.json();
-
-      if (data?.response?.status === 'OK' && data.response.result?.items) {
-        setSearchResults(data.response.result.items);
-      } else {
-        setSearchResults([]);
-        alert('검색 결과가 없습니다.');
-      }
-    } catch (error) {
-      console.error("Search failed:", error);
-      alert('검색 중 오류가 발생했습니다.');
-    } finally {
+    if (!geocoderRef.current) {
       setIsSearching(false);
+      return;
     }
+
+    // 카카오 장소/주소 검색 실행
+    const places = new window.kakao.maps.services.Places();
+    places.keywordSearch(searchQuery, (data: any, status: any) => {
+      setIsSearching(false);
+      if (status === window.kakao.maps.services.Status.OK) {
+        setSearchResults(data);
+      } else {
+        // 주소 검색 재시도
+        geocoderRef.current.addressSearch(searchQuery, (addrData: any, addrStatus: any) => {
+          if (addrStatus === window.kakao.maps.services.Status.OK) {
+            setSearchResults(addrData.map((item: any) => ({
+              place_name: item.road_address?.building_name || item.address_name,
+              address_name: item.address_name,
+              road_address_name: item.road_address?.address_name,
+              x: item.x,
+              y: item.y
+            })));
+          } else {
+            setSearchResults([]);
+            alert('검색 결과가 없습니다.');
+          }
+        });
+      }
+    });
   };
 
   // 현위치로 이동 (GPS)
@@ -589,16 +465,14 @@ export default function MapComponent() {
     }
   };
 
-  // 지도 확대 / 축소
   const handleZoom = (delta: number) => {
     const map = kakaoMapRef.current;
     if (!map) return;
-    const currentLevel = map.getLevel();
-    map.setLevel(currentLevel + delta);
+    map.setLevel(map.getLevel() + delta);
   };
 
   // ════════════════════════════════════════════════════════════════════
-  // ── 지도 + 로드뷰 동시 분할 모드 (Split View) ──
+  // ── [로드뷰] 사용자가 직접 눌렀을 때만 분할 뷰 열기! ──
   // ════════════════════════════════════════════════════════════════════
   const openSplitRoadview = (targetLat?: number, targetLng?: number) => {
     const map = kakaoMapRef.current;
@@ -619,16 +493,12 @@ export default function MapComponent() {
     const map = kakaoMapRef.current;
     if (map && window.kakao?.maps) {
       map.removeOverlayMapTypeId(window.kakao.maps.MapTypeId.ROADVIEW);
-      setTimeout(() => {
-        map.relayout();
-      }, 150);
+      setTimeout(() => { map.relayout(); }, 150);
     }
-
     if (roadviewMarkerRef.current) {
       roadviewMarkerRef.current.setMap(null);
       roadviewMarkerRef.current = null;
     }
-
     setIsSplitRoadview(false);
   };
 
@@ -674,7 +544,7 @@ export default function MapComponent() {
           map.panTo(position);
         }
       } else {
-        setRoadviewError('선택한 지점 반경 100m 내에 카카오 로드뷰 도로가 없습니다. 파란색 도로 위를 터치해 주세요.');
+        setRoadviewError('반경 100m 내에 촬영된 로드뷰 도로가 없습니다. 지도의 파란색 도로 위를 탭해 주세요.');
       }
     });
   };
@@ -723,34 +593,31 @@ export default function MapComponent() {
     }
   };
 
-  // 준공년도 및 경과년수 포맷팅 헬퍼
-  const formatApprovalDate = (dateStr?: string) => {
-    if (!dateStr || dateStr.length < 4) return '정보 없음';
-    const clean = dateStr.replace(/[^0-9]/g, '');
-    const year = parseInt(clean.slice(0, 4), 10);
-    const month = clean.length >= 6 ? parseInt(clean.slice(4, 6), 10) : null;
-    const currentYear = new Date().getFullYear();
-    const age = currentYear - year;
-    return `${year}년 ${month ? `${month}월` : ''} (${age}년 경과${age >= 25 ? ' · 노후' : ''})`;
-  };
-
-  // 연면적 평수 환산 헬퍼
-  const formatArea = (areaStr?: string) => {
-    if (!areaStr) return '정보 없음';
-    const num = parseFloat(areaStr);
-    if (isNaN(num)) return areaStr;
-    const pyeong = Math.round(num * 0.3025);
-    return `${num.toLocaleString()} ㎡ (약 ${pyeong.toLocaleString()}평)`;
+  // 모달 열 때 폼 상태 채우기
+  const openEditModal = () => {
+    if (!selectedLocation) return;
+    setFormName(selectedLocation.name || '');
+    setFormRoadAddress(selectedLocation.road_address || selectedLocation.address || '');
+    setFormJibunAddress(selectedLocation.jibun_address || '');
+    setFormGrndFlr(selectedLocation.floors || '');
+    setFormUgrndFlr(selectedLocation.ugrnd_flr || '');
+    setFormTotar(selectedLocation.totar || '');
+    setFormUseaprDay(selectedLocation.useapr_day || '');
+    setFormStructure(selectedLocation.structure || '');
+    setFormPurpose(selectedLocation.purpose || '');
+    setFormFieldNote(selectedLocation.field_note || '');
+    setPhoto1(null); setPhoto2(null); setPhoto3(null);
+    setShowEditModal(true);
   };
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', flexDirection: 'column' }}>
 
-      {/* ── [분할 모드 상단] 360° 로드뷰 뷰어 창 ── */}
+      {/* ── [분할 모드 상단] 360° 로드뷰 창 (클릭했을 때만 노출!) ── */}
       {isSplitRoadview && (
         <div style={{
           width: '100%',
-          height: '44%',
+          height: '42%',
           position: 'relative',
           backgroundColor: '#000',
           borderBottom: '2px solid var(--brand-red)',
@@ -769,10 +636,10 @@ export default function MapComponent() {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span style={{ fontSize: '11px', backgroundColor: 'var(--brand-red)', color: 'white', padding: '2px 8px', borderRadius: '100px', fontWeight: 800 }}>
-                360° 로드뷰 동시 보기
+                360° 로드뷰
               </span>
-              <span style={{ fontSize: '12px', color: 'white', fontWeight: 600, textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
-                아래 지도에서 원하는 골목을 탭하면 즉시 이동합니다
+              <span style={{ fontSize: '12px', color: 'white', fontWeight: 600 }}>
+                지도의 원하는 도로를 탭하면 로드뷰가 즉시 이동합니다
               </span>
             </div>
             <button
@@ -782,16 +649,16 @@ export default function MapComponent() {
                 border: '1px solid rgba(255,255,255,0.3)',
                 color: 'white',
                 borderRadius: '50%',
-                width: '32px',
-                height: '32px',
+                width: '30px',
+                height: '30px',
                 cursor: 'pointer',
                 display: 'flex',
                 justifyContent: 'center',
                 alignItems: 'center'
               }}
-              title="로드뷰 닫기 (전체 지도로 복귀)"
+              title="로드뷰 닫기"
             >
-              <X size={18} />
+              <X size={16} />
             </button>
           </div>
 
@@ -799,13 +666,13 @@ export default function MapComponent() {
 
           {roadviewLoading && (
             <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 10 }}>
-              <Loader2 size={32} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite', marginBottom: '8px' }} />
-              <span style={{ color: 'white', fontSize: '13px', fontWeight: 600 }}>현장 로드뷰 로딩 중...</span>
+              <Loader2 size={30} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite', marginBottom: '8px' }} />
+              <span style={{ color: 'white', fontSize: '12px', fontWeight: 600 }}>현장 로드뷰 로딩 중...</span>
             </div>
           )}
 
           {roadviewError && (
-            <div style={{ position: 'absolute', bottom: '12px', left: '16px', right: '16px', backgroundColor: 'rgba(255,42,42,0.9)', color: 'white', padding: '8px 14px', borderRadius: '10px', fontSize: '12px', fontWeight: 600, zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ position: 'absolute', bottom: '10px', left: '16px', right: '16px', backgroundColor: 'rgba(255,42,42,0.9)', color: 'white', padding: '6px 12px', borderRadius: '8px', fontSize: '11px', fontWeight: 600, zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>{roadviewError}</span>
               <button onClick={() => setRoadviewError(null)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontWeight: 700 }}>✕</button>
             </div>
@@ -813,67 +680,28 @@ export default function MapComponent() {
         </div>
       )}
 
-      {/* ── [지도 컨테이너] ── */}
-      <div style={{ flex: 1, position: 'relative', width: '100%', height: isSplitRoadview ? '56%' : '100%' }}>
+      {/* ── [지도 컨테이너] (지도가 화면의 80% 이상 확보됨!) ── */}
+      <div style={{ flex: 1, position: 'relative', width: '100%', height: isSplitRoadview ? '58%' : '100%' }}>
         <div
           ref={mapContainerRef}
           style={{ width: '100%', height: '100%', backgroundColor: '#1a1d24' }}
         />
 
-        {/* ── 지도 우측 컨트롤 ── */}
-        <div style={{ position: 'absolute', bottom: isSplitRoadview ? '20px' : '140px', right: '14px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '8px', transition: 'bottom 0.3s ease' }}>
+        {/* ── 지도 우측 플로팅 컨트롤 ── */}
+        <div style={{ position: 'absolute', bottom: selectedLocation ? '160px' : '30px', right: '14px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '8px', transition: 'bottom 0.3s ease' }}>
           
-          {/* 360° 로드뷰 동시 분할 토글 버튼 */}
-          <button
-            className="glass btn-hover-effect"
-            onClick={() => {
-              if (isSplitRoadview) {
-                closeSplitRoadview();
-              } else {
-                openSplitRoadview();
-              }
-            }}
-            style={{
-              width: '42px',
-              height: '42px',
-              borderRadius: '12px',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              alignItems: 'center',
-              border: isSplitRoadview ? '2px solid #00c853' : '1px solid var(--border)',
-              backgroundColor: isSplitRoadview ? 'rgba(0, 200, 83, 0.25)' : 'var(--surface)',
-              cursor: 'pointer',
-              padding: 0,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
-            }}
-            title={isSplitRoadview ? "로드뷰 닫기" : "지도+로드뷰 동시 보기"}
-          >
-            <Compass size={18} color={isSplitRoadview ? "#00e676" : "var(--text-primary)"} />
-            <span style={{ fontSize: '9px', fontWeight: 700, color: isSplitRoadview ? "#00e676" : "var(--text-secondary)", marginTop: '1px' }}>
-              로드뷰
-            </span>
-          </button>
-
-          {/* 스카이뷰(위성사진) 토글 버튼 */}
+          {/* 스카이뷰(위성사진) 토글 */}
           <button
             className="glass btn-hover-effect"
             onClick={toggleMapType}
             style={{
-              width: '42px',
-              height: '42px',
-              borderRadius: '12px',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              alignItems: 'center',
+              width: '42px', height: '42px', borderRadius: '12px',
+              display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
               border: isSkyview ? '2px solid var(--brand-red)' : '1px solid var(--border)',
               backgroundColor: isSkyview ? 'rgba(255,42,42,0.2)' : 'var(--surface)',
-              cursor: 'pointer',
-              padding: 0,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+              cursor: 'pointer', padding: 0, boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
             }}
-            title={isSkyview ? "일반지도로 전환" : "위성 스카이뷰로 전환"}
+            title={isSkyview ? "일반지도" : "위성지도"}
           >
             <Layers size={18} color={isSkyview ? "var(--brand-red)" : "var(--text-primary)"} />
             <span style={{ fontSize: '9px', fontWeight: 700, color: isSkyview ? "var(--brand-red)" : "var(--text-secondary)", marginTop: '1px' }}>
@@ -886,34 +714,24 @@ export default function MapComponent() {
             <button
               onClick={() => handleZoom(-1)}
               style={{ width: '42px', height: '36px', background: 'var(--surface)', border: 'none', borderBottom: '1px solid var(--border)', color: 'white', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
-            >
-              +
-            </button>
+            >+</button>
             <button
               onClick={() => handleZoom(1)}
               style={{ width: '42px', height: '36px', background: 'var(--surface)', border: 'none', color: 'white', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
-            >
-              -
-            </button>
+            >-</button>
           </div>
 
-          {/* 현위치 (GPS) 버튼 */}
+          {/* 현위치 (GPS) */}
           <button
             className="glass btn-hover-effect"
             onClick={handleLocateMe}
             style={{
-              width: '42px',
-              height: '42px',
-              borderRadius: '12px',
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-              border: '1px solid var(--border)',
-              cursor: 'pointer',
-              backgroundColor: 'var(--surface)',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+              width: '42px', height: '42px', borderRadius: '12px',
+              display: 'flex', justifyContent: 'center', alignItems: 'center',
+              border: '1px solid var(--border)', cursor: 'pointer',
+              backgroundColor: 'var(--surface)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
             }}
-            title="내 위치 찾기"
+            title="내 위치"
           >
             <LocateFixed size={20} color={locating ? "var(--brand-red)" : "var(--text-primary)"} className={locating ? "animate-pulse" : ""} />
           </button>
@@ -924,127 +742,96 @@ export default function MapComponent() {
           <div
             className="glass"
             style={{
-              position: 'absolute',
-              top: '20px',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              zIndex: 1000,
-              padding: '8px 20px',
-              borderRadius: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              width: '94%',
-              maxWidth: '500px',
-              border: '1px solid rgba(255,255,255,0.1)'
+              position: 'absolute', top: '16px', left: '50%', transform: 'translateX(-50%)',
+              zIndex: 1000, padding: '8px 18px', borderRadius: '20px',
+              display: 'flex', alignItems: 'center', gap: '12px',
+              width: '94%', maxWidth: '500px', border: '1px solid rgba(255,255,255,0.1)'
             }}
           >
-            <div style={{ width: '40px', height: '40px', backgroundColor: 'var(--brand-red)', borderRadius: '12px', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center', boxShadow: '0 4px 12px rgba(255,42,42,0.3)' }}>
+            <div style={{ width: '36px', height: '36px', backgroundColor: 'var(--brand-red)', borderRadius: '10px', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
               <img src="/logo.png" alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
             </div>
             <div style={{ flex: 1 }}>
-              <h1 style={{ margin: 0, fontSize: '17px', fontWeight: 900, letterSpacing: '-0.5px', color: 'white' }}>
-                파이어링크 <span style={{ color: 'var(--brand-red)', fontSize: '11px', verticalAlign: 'top', fontWeight: 500 }}>SEOUL</span>
+              <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: 'white' }}>
+                파이어링크 <span style={{ color: 'var(--brand-red)', fontSize: '11px', fontWeight: 700 }}>SEOUL</span>
               </h1>
-              <p style={{ margin: 0, fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>건물 연결송수관 설비 정보 시스템 · 카카오맵 연동</p>
+              <p style={{ margin: 0, fontSize: '10px', color: 'var(--text-secondary)' }}>건물 연결송수관 설비 정보 시스템</p>
             </div>
             <button
               onClick={() => setShowMenu(true)}
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', cursor: 'pointer', padding: '8px', borderRadius: '12px', display: 'flex', alignItems: 'center' }}
+              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', cursor: 'pointer', padding: '6px', borderRadius: '10px' }}
             >
-              <Menu size={20} />
+              <Menu size={18} />
             </button>
           </div>
         )}
 
-        {/* ── Search Bar & Recent History (검색 시 로드뷰 자동 오픈 연동!) ── */}
+        {/* ── Search Bar (검색 시 지도만 깔끔하게 이동, 로드뷰 강제 오픈 없음!) ── */}
         {!isSplitRoadview && (
           <div style={{
-            position: 'absolute',
-            top: '90px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 1000,
-            width: '90%',
-            maxWidth: '500px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px'
+            position: 'absolute', top: '76px', left: '50%', transform: 'translateX(-50%)',
+            zIndex: 1000, width: '92%', maxWidth: '500px', display: 'flex', flexDirection: 'column', gap: '6px'
           }}>
             <form
               onSubmit={handleSearch}
               className="glass"
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                padding: '4px 16px',
-                borderRadius: '100px',
-                border: '1px solid var(--border)'
+                display: 'flex', alignItems: 'center', padding: '3px 14px',
+                borderRadius: '100px', border: '1px solid var(--border)'
               }}
             >
-              <Search size={18} color="var(--text-secondary)" />
+              <Search size={16} color="var(--text-secondary)" />
               <input
                 type="text"
-                placeholder="주소나 건물명 검색 시 로드뷰 자동 실행 (예: 세종대로 110)"
+                placeholder="건물명 또는 주소 검색 (예: 종로구청, 세종대로 110)"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onFocus={() => setIsSearchFocused(true)}
                 onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
                 style={{
-                  flex: 1,
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--text-primary)',
-                  padding: '12px 12px',
-                  outline: 'none',
-                  fontSize: '14px'
+                  flex: 1, background: 'transparent', border: 'none',
+                  color: 'var(--text-primary)', padding: '10px 10px',
+                  outline: 'none', fontSize: '13px'
                 }}
               />
               {isSearching && <Loader2 size={16} className="animate-spin" color="var(--brand-red)" style={{ animation: 'spin 1s linear infinite' }} />}
             </form>
 
             {(searchResults.length > 0 || (isSearchFocused && searchHistory.length > 0 && searchQuery === '')) && (
-              <div className="glass-panel" style={{ borderRadius: '16px', overflow: 'hidden', maxHeight: '250px', overflowY: 'auto', marginTop: '4px' }}>
-                {searchResults.length === 0 && (
-                  <div style={{ padding: '8px 16px', fontSize: '12px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
-                    최근 검색 기록 (선택 시 해당 건물 로드뷰 자동 실행)
-                  </div>
-                )}
+              <div className="glass-panel" style={{ borderRadius: '14px', overflow: 'hidden', maxHeight: '220px', overflowY: 'auto' }}>
                 {(searchResults.length > 0 ? searchResults : searchHistory).map((result, idx) => (
                   <div
                     key={idx}
-                    onClick={async () => {
-                      const lat = parseFloat(result.point.y);
-                      const lng = parseFloat(result.point.x);
-                      if (searchResults.length > 0) addToHistory(result);
+                    onClick={() => {
+                      const lat = parseFloat(result.y);
+                      const lng = parseFloat(result.x);
+                      addToHistory({
+                        name: result.place_name || result.address_name,
+                        address: result.road_address_name || result.address_name,
+                        x: result.x,
+                        y: result.y
+                      });
                       setSearchResults([]);
                       setSearchQuery('');
-                      // 지도 이동 및 건물 정보 로드
-                      await handleLocationSelect(lat, lng, true);
-                      // 검색 즉시 현장 로드뷰 분할 모드 자동 실행! (소방관 요구사항)
-                      openSplitRoadview(lat, lng);
+                      // 지도가 해당 좌표로 부드럽게 이동하고 하단 미니 카드만 활성화!
+                      handleLocationSelect(lat, lng, true);
                     }}
                     style={{
-                      padding: '12px 16px',
-                      borderBottom: idx < (searchResults.length > 0 ? searchResults.length : searchHistory.length) - 1 ? '1px solid var(--border)' : 'none',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px'
+                      padding: '10px 14px',
+                      borderBottom: '1px solid var(--border)',
+                      cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '2px'
                     }}
                     className="btn-hover-effect"
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {searchResults.length === 0 && <History size={14} color="var(--text-secondary)" />}
-                      <span style={{ fontSize: '14px', fontWeight: 600 }}>
-                        {result.address?.road || result.address?.parcel || '주소 정보'}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <MapPinned size={14} color="var(--brand-red)" />
+                      <span style={{ fontSize: '13px', fontWeight: 700 }}>
+                        {result.place_name || result.name || result.address_name}
                       </span>
                     </div>
-                    {result.address?.parcel && result.address?.road && (
-                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        지번: {result.address.parcel}
-                      </span>
-                    )}
+                    <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                      {result.road_address_name || result.address_name || result.address}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -1052,482 +839,330 @@ export default function MapComponent() {
           </div>
         )}
 
-        {/* ── 스마트 슬림 플로팅 로딩 인디케이터 (지도를 가리지 않고 즉시 반응) ── */}
-        {isLoading && (
-          <div style={{
-            position: 'absolute',
-            top: isSplitRoadview ? '12px' : '150px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 2500,
-            backgroundColor: 'rgba(15, 17, 23, 0.95)',
-            backdropFilter: 'blur(10px)',
-            border: '1px solid var(--brand-red)',
-            borderRadius: '100px',
-            padding: '8px 20px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            boxShadow: '0 8px 24px rgba(255, 42, 42, 0.35)',
-            pointerEvents: 'none'
-          }}>
-            <Loader2 size={16} color="var(--brand-red)" className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-            <span style={{ fontSize: '13px', color: 'white', fontWeight: 700, letterSpacing: '-0.3px' }}>
-              국토교통부 건축물대장 및 설비 조회 중...
-            </span>
+        {/* ════════════════════════════════════════════════════════════════════ */}
+        {/* 🚒 [소방관용 슬림 미니 플로팅 카드] (화면의 20%만 차지, 지도가 80% 확보!) */}
+        {/* ════════════════════════════════════════════════════════════════════ */}
+        {selectedLocation && !isSplitRoadview && (
+          <div
+            className="glass-panel"
+            style={{
+              position: 'absolute',
+              bottom: '16px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: '94%',
+              maxWidth: '500px',
+              zIndex: 1200,
+              borderRadius: '20px',
+              padding: '16px',
+              boxShadow: '0 12px 36px rgba(0,0,0,0.6)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}
+          >
+            {/* 1열: 건물명 + 닫기 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1, marginRight: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Building size={18} color="var(--brand-red)" />
+                  <h2 style={{ margin: 0, fontSize: '17px', fontWeight: 800, color: 'white' }}>
+                    {selectedLocation.name}
+                  </h2>
+                </div>
+                <p style={{ margin: '3px 0 0', fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {selectedLocation.road_address ? `도로명: ${selectedLocation.road_address}` : selectedLocation.address}
+                </p>
+              </div>
+              <button
+                onClick={() => { setSelectedLocation(null); if (currentMarkerRef.current) currentMarkerRef.current.setMap(null); }}
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '2px' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* 2열: 송수관 등록 상태 한눈에 1초 파악! */}
+            <div style={{
+              backgroundColor: selectedLocation.has_photos ? 'rgba(0, 230, 118, 0.12)' : 'rgba(255, 42, 42, 0.12)',
+              border: `1px solid ${selectedLocation.has_photos ? 'rgba(0, 230, 118, 0.3)' : 'rgba(255, 42, 42, 0.3)'}`,
+              borderRadius: '10px',
+              padding: '8px 12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{
+                  width: '8px', height: '8px', borderRadius: '50%',
+                  backgroundColor: selectedLocation.has_photos ? '#00e676' : 'var(--brand-red)'
+                }} />
+                <span style={{ fontSize: '13px', fontWeight: 800, color: selectedLocation.has_photos ? '#00e676' : '#ff5252' }}>
+                  {selectedLocation.has_photos ? '송수관 등록 완료' : '송수관 미등록'}
+                </span>
+                {selectedLocation.field_note && (
+                  <span style={{ fontSize: '12px', color: 'white', fontWeight: 500 }}>
+                    · {selectedLocation.field_note.slice(0, 16)}...
+                  </span>
+                )}
+              </div>
+              {selectedLocation.has_photos && (
+                <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                  사진 { [selectedLocation.photo1_path, selectedLocation.photo2_path, selectedLocation.photo3_path].filter(Boolean).length }장
+                </span>
+              )}
+            </div>
+
+            {/* 3열: 소방관 핵심 조작 버튼 (로드뷰 / 상세보기 / 정보등록) */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {/* 로드뷰 열기: 클릭했을 때만 실행! */}
+              <button
+                className="btn-secondary btn-hover-effect"
+                onClick={() => openSplitRoadview(selectedLocation.lat, selectedLocation.lng)}
+                style={{
+                  flex: 1, padding: '10px 8px', borderRadius: '10px',
+                  display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px',
+                  fontSize: '12px', fontWeight: 700, backgroundColor: 'rgba(255,255,255,0.06)'
+                }}
+              >
+                <Compass size={15} color="var(--brand-red)" />
+                <span>360° 로드뷰</span>
+              </button>
+
+              {/* 사진 및 상세 펼치기 */}
+              {selectedLocation.has_photos && (
+                <button
+                  className="btn-secondary btn-hover-effect"
+                  onClick={() => setShowDetailSheet(true)}
+                  style={{
+                    flex: 1, padding: '10px 8px', borderRadius: '10px',
+                    display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px',
+                    fontSize: '12px', fontWeight: 700, backgroundColor: 'rgba(255,255,255,0.06)'
+                  }}
+                >
+                  <ImageIcon size={15} color="#6ea8fe" />
+                  <span>사진 보기</span>
+                </button>
+              )}
+
+              {/* 정보 및 사진 직접 등록/제보 */}
+              <button
+                className="btn-primary"
+                onClick={openEditModal}
+                style={{
+                  flex: 1.2, padding: '10px 8px', borderRadius: '10px',
+                  display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px',
+                  fontSize: '12px', fontWeight: 800
+                }}
+              >
+                <Edit3 size={15} />
+                <span>{selectedLocation.has_photos ? '정보/사진 수정' : '송수관 정보 제보'}</span>
+              </button>
+            </div>
           </div>
         )}
 
-        {/* ── [소방 작전용 건축물 상세 브리핑 바텀시트] ── */}
-        <div
-          className="glass-panel"
-          style={{
-            position: 'absolute',
-            bottom: (selectedLocation && !isSplitRoadview) ? '0' : '-100%',
-            left: '0',
-            width: '100%',
-            zIndex: 1000,
-            transition: 'bottom 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
-            padding: '24px',
-            paddingBottom: 'calc(140px + env(safe-area-inset-bottom, 40px))',
-            borderTopLeftRadius: '24px',
-            borderTopRightRadius: '24px',
-            maxHeight: '85vh',
-            overflowY: 'auto',
-            WebkitOverflowScrolling: 'touch',
-            touchAction: 'pan-y',
-            overscrollBehavior: 'contain',
-            boxShadow: '0 -10px 40px rgba(0,0,0,0.5)'
-          }}
-        >
-          {selectedLocation && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1, marginRight: '8px' }}>
-                  {isEditing ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div>
-                        <label style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>건물명</label>
-                        <input
-                          value={editName}
-                          onChange={e => setEditName(e.target.value)}
-                          placeholder="건물 이름을 입력하세요"
-                          style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--brand-red)', borderRadius: '8px', padding: '8px 12px', color: 'white', fontSize: '16px', fontWeight: 700, fontFamily: 'inherit', boxSizing: 'border-box' }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>주소 / 위치 보완</label>
-                        <input
-                          value={editAddress}
-                          onChange={e => setEditAddress(e.target.value)}
-                          placeholder="주소나 위치 설명을 보완하세요"
-                          style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 12px', color: 'white', fontSize: '14px', fontFamily: 'inherit', boxSizing: 'border-box' }}
-                        />
-                      </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <button
-                          className="btn-primary"
-                          style={{ flex: 1, padding: '10px' }}
-                          onClick={async () => {
-                            try {
-                              if (!selectedLocation || !selectedLocation.id) {
-                                alert('건물 정보가 올바르지 않습니다.');
-                                return;
-                              }
-                              const updatedName = editName.trim();
-                              const updatedAddr = editAddress.trim();
-
-                              const editData = {
-                                id: selectedLocation.id,
-                                name: selectedLocation.originalName || selectedLocation.name || '',
-                                address: selectedLocation.originalAddress || selectedLocation.address || '',
-                                lat: selectedLocation.lat,
-                                lng: selectedLocation.lng,
-                                floors: String(selectedLocation.floors || '?'),
-                                user_edited_name: updatedName || null,
-                                user_edited_address: updatedAddr || null,
-                                edited_by: deviceId.slice(0, 8),
-                                edited_at: new Date().toISOString()
-                              };
-
-                              const { error } = await supabase.from('buildings').upsert(editData);
-                              if (error) throw error;
-
-                              setSelectedLocation((prev: any) => ({
-                                ...prev,
-                                name: updatedName || prev.originalName || prev.name,
-                                address: updatedAddr || prev.originalAddress || prev.address,
-                                user_edited_name: updatedName || null,
-                                user_edited_address: updatedAddr || null
-                              }));
-
-                              setIsEditing(false);
-                              await fetchRegistry();
-                            } catch (err: any) {
-                              console.error('Save error:', err);
-                              alert('저장 중 오류가 발생했습니다: ' + (err.message || '알 수 없는 오류'));
-                            }
-                          }}
-                        >저장</button>
-                        <button
-                          onClick={() => setIsEditing(false)}
-                          style={{ flex: 1, padding: '10px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px' }}
-                        >취소</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div>
-                      {/* 건물명 */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                        <MapPinned size={20} color="var(--brand-red)" />
-                        <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 800 }}>{selectedLocation.name}</h2>
-                        <button
-                          title="건물 정보 수정"
-                          onClick={() => { setEditName(selectedLocation.name === '이름 없는 건물' ? '' : selectedLocation.name); setEditAddress(selectedLocation.address === '주소 정보 없음' ? '' : selectedLocation.address); setIsEditing(true); }}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px', opacity: 0.6, display: 'flex', alignItems: 'center' }}
-                        >
-                          ✏️
-                        </button>
-                      </div>
-
-                      {/* 도로명 & 지번 주소 */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '4px' }}>
-                        <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '14px', fontWeight: 500 }}>
-                          {selectedLocation.road_address ? `도로명: ${selectedLocation.road_address}` : selectedLocation.address}
-                        </p>
-                        {selectedLocation.jibun_address && (
-                          <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '12px' }}>
-                            지번: {selectedLocation.jibun_address}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* 대원 편집 이력 뱃지 */}
-                      {registry.find(r => r.id === selectedLocation.id)?.user_edited_name && (
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginTop: '6px', backgroundColor: 'rgba(30,120,255,0.15)', border: '1px solid rgba(30,120,255,0.3)', borderRadius: '100px', padding: '2px 8px' }}>
-                          <span style={{ fontSize: '10px', color: '#6ea8fe' }}>🔵 대원 편집됨 · {new Date(registry.find(r => r.id === selectedLocation.id)!.edited_at!).toLocaleDateString('ko-KR')}</span>
-                        </div>
-                      )}
-
-                      {/* ── 현장 360° 로드뷰 동시 분할 뷰 열기 버튼 ── */}
-                      <div style={{ marginTop: '12px' }}>
-                        <button
-                          onClick={() => openSplitRoadview(selectedLocation.lat, selectedLocation.lng)}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            padding: '10px 18px',
-                            borderRadius: '100px',
-                            backgroundColor: 'rgba(255, 42, 42, 0.15)',
-                            border: '1.5px solid var(--brand-red)',
-                            color: 'white',
-                            fontSize: '14px',
-                            fontWeight: 800,
-                            cursor: 'pointer'
-                          }}
-                          className="btn-hover-effect"
-                        >
-                          <Compass size={18} color="var(--brand-red)" />
-                          <span>현장 360° 로드뷰 동시 확인</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <button
-                  onClick={() => { setSelectedLocation(null); setIsEditing(false); drawGeoJson(null); }}
-                  style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', flexShrink: 0 }}
-                >
-                  <X size={24} />
-                </button>
-              </div>
-
-              {/* ══════════════════════════════════════════════════════ */}
-              {/* 🏛️ [공식 국토교통부 건축물대장 스펙 카드 (자동 연동)] */}
-              {/* ══════════════════════════════════════════════════════ */}
-              <div style={{
-                backgroundColor: 'rgba(255,255,255,0.03)',
-                borderRadius: '16px',
-                border: '1px solid rgba(255,255,255,0.08)',
-                padding: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <ShieldCheck size={16} color="var(--brand-red)" />
-                    <span style={{ fontSize: '13px', fontWeight: 800, color: 'white' }}>건축물대장 소방 제원 정보</span>
-                  </div>
-                  <span style={{ fontSize: '11px', color: '#00e676', backgroundColor: 'rgba(0,230,118,0.1)', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>국토교통부 공식</span>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                  {/* 1. 층수 (지상 / 지하) */}
-                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
-                      <Building size={13} color="var(--brand-red)" />
-                      <span>층수 (지상 · 지하)</span>
-                    </div>
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: 'white' }}>
-                      지상 {selectedLocation.floors || '?'}층 · <span style={{ color: selectedLocation.ugrnd_flr && selectedLocation.ugrnd_flr !== '0' ? '#ff7043' : 'var(--text-secondary)' }}>지하 {selectedLocation.ugrnd_flr || '0'}층</span>
-                    </div>
-                  </div>
-
-                  {/* 2. 연면적 (평수 환산) */}
-                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
-                      <Ruler size={13} color="var(--brand-red)" />
-                      <span>총 연면적</span>
-                    </div>
-                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'white' }}>
-                      {formatArea(selectedLocation.totar)}
-                    </div>
-                  </div>
-
-                  {/* 3. 사용승인일 (준공년도 & 경과년수) */}
-                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
-                      <Calendar size={13} color="var(--brand-red)" />
-                      <span>사용승인일자</span>
-                    </div>
-                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'white' }}>
-                      {formatApprovalDate(selectedLocation.useapr_day)}
-                    </div>
-                  </div>
-
-                  {/* 4. 건물 주구조 / 용도 */}
-                  <div style={{ backgroundColor: 'var(--surface)', padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px' }}>
-                      <ShieldCheck size={13} color="var(--brand-red)" />
-                      <span>주구조 · 주용도</span>
-                    </div>
-                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {selectedLocation.structure || selectedLocation.purpose ? `${selectedLocation.structure || '-'} / ${selectedLocation.purpose || '-'}` : '정보 없음'}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* ══════════════════════════════════════════════════════ */}
-              {/* 📸 송수관 현장 등록 사진 및 위치 특징 */}
-              {/* ══════════════════════════════════════════════════════ */}
-              {selectedLocation.has_photos ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                      {isEditingCircles ? '사진을 터치하여 송수구 위치를 지정하세요' : '연결송수관 현장 등록 데이터'}
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      {!isEditingCircles && (
-                        <button
-                          className="btn-secondary"
-                          style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px', backgroundColor: 'rgba(255,255,255,0.05)' }}
-                          onClick={() => setShowUploadModal(true)}
-                        >
-                          사진 재등록
-                        </button>
-                      )}
-                      <button
-                        className={isEditingCircles ? "btn-primary" : "btn-secondary"}
-                        style={{ padding: '6px 14px', fontSize: '13px', borderRadius: '100px' }}
-                        onClick={async () => {
-                          if (isEditingCircles) {
-                            try {
-                              if (!selectedLocation) return;
-                              const { error } = await supabase
-                                .from('buildings')
-                                .update({
-                                  photo1_x: p1Circle?.x,
-                                  photo1_y: p1Circle?.y,
-                                  photo2_x: p2Circle?.x,
-                                  photo2_y: p2Circle?.y
-                                })
-                                .eq('id', selectedLocation.id);
-
-                              if (error) throw error;
-                              setIsEditingCircles(false);
-                              fetchRegistry();
-                            } catch (error) {
-                              console.error(error);
-                              alert('위치 정보 저장 실패');
-                            }
-                          } else {
-                            setIsEditingCircles(true);
-                          }
-                        }}
-                      >
-                        {isEditingCircles ? '위치 저장 완료' : '위치 수정'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* ── 현장 특이사항 및 위치 힌트 ── */}
-                  <div style={{ backgroundColor: 'var(--surface)', padding: '16px 20px', borderRadius: '16px', border: '1px solid var(--border)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.2)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                      <div style={{ width: '24px', height: '24px', borderRadius: '6px', backgroundColor: 'rgba(255,170,0,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Info size={14} color="var(--warning)" />
-                      </div>
-                      <span style={{ fontWeight: 800, fontSize: '14px', color: 'var(--text-primary)' }}>송수관 위치 특징 & 현장 특이사항</span>
-                    </div>
-                    <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.6, color: 'white', fontWeight: 500 }}>
-                      {selectedLocation.field_note || '등록된 위치 특징 메모가 없습니다.'}
-                    </p>
-                  </div>
-
-                  {/* ── 사진 수직 배치 (원본 비율 유지) ── */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                    <ImageWithCircle
-                      label="1. 건물 전체 전경 (송수구 위치 표시)"
-                      src={selectedLocation.photo1_url || "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80"}
-                      circle={p1Circle}
-                      onCircleSet={(pos) => setP1Circle(pos)}
-                      isEditing={isEditingCircles}
-                      allowCircle={true}
-                    />
-                    <ImageWithCircle
-                      label="2. 설비 근접 사진 (상세 위치)"
-                      src={selectedLocation.photo2_url || "https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=800&auto=format&fit=crop&q=80"}
-                      circle={p2Circle}
-                      onCircleSet={(pos) => setP2Circle(pos)}
-                      isEditing={isEditingCircles}
-                      allowCircle={false}
-                    />
-                    {selectedLocation.photo3_url && (
-                      <ImageWithCircle
-                        label="3. 지도 방면 표시 사진"
-                        src={selectedLocation.photo3_url}
-                        circle={null}
-                        onCircleSet={() => {}}
-                        isEditing={false}
-                        allowCircle={false}
-                      />
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '36px 20px',
-                  backgroundColor: 'var(--surface)',
-                  borderRadius: '16px',
-                  border: '1px dashed var(--border)',
-                  gap: '16px'
-                }}>
-                  <div style={{ width: '64px', height: '64px', borderRadius: '32px', backgroundColor: 'rgba(255, 42, 42, 0.1)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                    <ImageIcon size={32} color="var(--brand-red)" />
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <h3 style={{ margin: '0 0 6px 0', fontSize: '17px', fontWeight: 700 }}>등록된 송수관 사진이 없습니다</h3>
-                    <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '13px' }}>현장 출동 시 건물 전경 및 송수관 상세 사진을 등록해 주세요.</p>
-                  </div>
-                  <button className="btn-primary" onClick={() => setShowUploadModal(true)} style={{ width: '100%', marginTop: '4px' }}>
-                    <Camera size={18} />
-                    <span>송수관 사진 & 위치 특징 등록</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── 현장 데이터 업로드 모달 (소방관용 원터치 퀵 태그 탑재!) ── */}
-      {showUploadModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.85)',
-          backdropFilter: 'blur(6px)',
-          zIndex: 4000,
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'flex-end'
-        }}>
-          <div style={{ flex: 1 }} onClick={() => !isUploading && setShowUploadModal(false)}></div>
-          <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        {/* ── [상세 사진 및 건축 정보 펼침 시트] (사진 보기 클릭 시에만 노출) ── */}
+        {showDetailSheet && selectedLocation && (
+          <div
+            className="glass-panel"
+            style={{
+              position: 'fixed', inset: 0, zIndex: 3000,
+              backgroundColor: 'rgba(10, 11, 14, 0.95)',
+              display: 'flex', flexDirection: 'column'
+            }}
+          >
+            {/* 헤더 */}
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>현장 사진 및 위치 특징 등록</h2>
-                <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {selectedLocation?.name} · 최소 1장 이상 등록 가능
-                </p>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 800 }}>{selectedLocation.name} 송수관 사진</h3>
+                <p style={{ margin: '2px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>{selectedLocation.address}</p>
               </div>
-              <button disabled={isUploading} onClick={() => setShowUploadModal(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}>
+              <button onClick={() => setShowDetailSheet(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}>
                 <X size={24} />
               </button>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-              {/* 사진 1 (전경) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', fontWeight: 600, display: 'flex', justifyContent: 'space-between' }}>
-                  <span>1. 건물 전체 전경 사진</span>
-                  <span style={{ color: 'var(--brand-red)', fontSize: '11px' }}>권장</span>
-                </label>
-                <label style={{ height: '76px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo1 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
-                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto1(e.target.files?.[0] ?? null)} />
-                  <Camera size={22} color={photo1 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
-                  <span style={{ fontSize: '12px', color: photo1 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: photo1 ? 700 : 400 }}>
-                    {photo1 ? `✓ ${photo1.name}` : '탭하여 촬영 또는 앨범 선택'}
-                  </span>
-                </label>
+            {/* 스크롤 내용 */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* 대원이 직접 기재한 현장 특이사항 */}
+              {selectedLocation.field_note && (
+                <div style={{ backgroundColor: 'var(--surface)', padding: '14px 16px', borderRadius: '12px', border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: '12px', color: 'var(--brand-red)', fontWeight: 800, marginBottom: '4px' }}>송수관 위치 특징 & 현장 특이사항</div>
+                  <div style={{ fontSize: '14px', color: 'white', fontWeight: 600 }}>{selectedLocation.field_note}</div>
+                </div>
+              )}
+
+              {/* 층수 / 연면적 / 준공일 등 직접 입력된 제원 */}
+              {(selectedLocation.floors || selectedLocation.totar || selectedLocation.useapr_day) && (
+                <div style={{ backgroundColor: 'var(--surface)', padding: '14px 16px', borderRadius: '12px', border: '1px solid var(--border)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  {selectedLocation.floors && (
+                    <div>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>층수: </span>
+                      <span style={{ fontSize: '13px', fontWeight: 700 }}>지상 {selectedLocation.floors}층 · 지하 {selectedLocation.ugrnd_flr || '0'}층</span>
+                    </div>
+                  )}
+                  {selectedLocation.totar && (
+                    <div>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>연면적: </span>
+                      <span style={{ fontSize: '13px', fontWeight: 700 }}>{selectedLocation.totar}</span>
+                    </div>
+                  )}
+                  {selectedLocation.useapr_day && (
+                    <div>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>준공일: </span>
+                      <span style={{ fontSize: '13px', fontWeight: 700 }}>{selectedLocation.useapr_day}</span>
+                    </div>
+                  )}
+                  {selectedLocation.structure && (
+                    <div>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>구조/용도: </span>
+                      <span style={{ fontSize: '13px', fontWeight: 700 }}>{selectedLocation.structure} / {selectedLocation.purpose}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 등록된 사진 1, 2, 3장 */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <ImageWithCircle
+                  label="1. 건물 전체 전경 (송수구 위치 표시)"
+                  src={selectedLocation.photo1_url || "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80"}
+                  circle={p1Circle}
+                  onCircleSet={(pos) => setP1Circle(pos)}
+                  isEditing={isEditingCircles}
+                  allowCircle={true}
+                />
+                <ImageWithCircle
+                  label="2. 설비 근접 사진 (상세 위치)"
+                  src={selectedLocation.photo2_url || "https://images.unsplash.com/photo-1621245059942-0fbc35851de9?w=800&auto=format&fit=crop&q=80"}
+                  circle={p2Circle}
+                  onCircleSet={(pos) => setP2Circle(pos)}
+                  isEditing={isEditingCircles}
+                  allowCircle={false}
+                />
+                {selectedLocation.photo3_url && (
+                  <ImageWithCircle
+                    label="3. 지도 방면 표시 사진"
+                    src={selectedLocation.photo3_url}
+                    circle={null}
+                    onCircleSet={() => {}}
+                    isEditing={false}
+                    allowCircle={false}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ✏️ [건물 정보 및 송수관 직접 입력 / 제보 모달] */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {showEditModal && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)',
+          backdropFilter: 'blur(6px)', zIndex: 4000,
+          display: 'flex', flexDirection: 'column', justifyContent: 'flex-end'
+        }}>
+          <div style={{ flex: 1 }} onClick={() => !isUploading && setShowEditModal(false)}></div>
+          <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '19px', fontWeight: 800 }}>소방관 제보 및 정보 직접 입력</h2>
+                <p style={{ margin: '3px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  현장 확인 정보를 직접 입력하여 소방관들에게 공유합니다
+                </p>
+              </div>
+              <button disabled={isUploading} onClick={() => setShowEditModal(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}>
+                <X size={24} />
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              
+              {/* 건물 기본 정보 */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>건물명</label>
+                  <input
+                    value={formName}
+                    onChange={e => setFormName(e.target.value)}
+                    placeholder="예: 서울특별시청"
+                    style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 10px', color: 'white', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>도로명 주소</label>
+                  <input
+                    value={formRoadAddress}
+                    onChange={e => setFormRoadAddress(e.target.value)}
+                    placeholder="예: 세종대로 110"
+                    style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 10px', color: 'white', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                </div>
               </div>
 
-              {/* 사진 2 (상세) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', fontWeight: 600, display: 'flex', justifyContent: 'space-between' }}>
-                  <span>2. 송수관 근접 상세 사진</span>
-                  <span style={{ color: 'var(--brand-red)', fontSize: '11px' }}>권장</span>
-                </label>
-                <label style={{ height: '76px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo2 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
-                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto2(e.target.files?.[0] ?? null)} />
-                  <Camera size={22} color={photo2 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
-                  <span style={{ fontSize: '12px', color: photo2 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: photo2 ? 700 : 400 }}>
-                    {photo2 ? `✓ ${photo2.name}` : '탭하여 촬영 또는 앨범 선택'}
-                  </span>
-                </label>
+              {/* 층수 세분화 (소방관 필수 정보) */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>지상 층수</label>
+                  <input
+                    value={formGrndFlr}
+                    onChange={e => setFormGrndFlr(e.target.value)}
+                    placeholder="예: 15"
+                    style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 10px', color: 'white', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '12px', color: '#ff7043', display: 'block', marginBottom: '4px', fontWeight: 700 }}>지하 층수 (작전 핵심)</label>
+                  <input
+                    value={formUgrndFlr}
+                    onChange={e => setFormUgrndFlr(e.target.value)}
+                    placeholder="예: 3"
+                    style={{ width: '100%', background: 'var(--surface)', border: '1px solid #ff7043', borderRadius: '8px', padding: '8px 10px', color: 'white', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                </div>
               </div>
 
-              {/* 사진 3 (지도 방면 표시 캡쳐) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', fontWeight: 600, display: 'flex', justifyContent: 'space-between' }}>
-                  <span>3. 지도 방면 표시 사진 (캡쳐 등)</span>
-                  <span style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>선택</span>
-                </label>
-                <label style={{ height: '76px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px', border: '1px dashed var(--border)', borderRadius: '12px', backgroundColor: photo3 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
-                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto3(e.target.files?.[0] ?? null)} />
-                  <Camera size={22} color={photo3 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
-                  <span style={{ fontSize: '12px', color: photo3 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: photo3 ? 700 : 400 }}>
-                    {photo3 ? `✓ ${photo3.name}` : '탭하여 지도 캡쳐 첨부'}
-                  </span>
-                </label>
+              {/* 연면적 & 준공일 */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>연면적 (m² 또는 평)</label>
+                  <input
+                    value={formTotar}
+                    onChange={e => setFormTotar(e.target.value)}
+                    placeholder="예: 45,000㎡ 또는 13,000평"
+                    style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 10px', color: 'white', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>준공년도 (사용승인)</label>
+                  <input
+                    value={formUseaprDay}
+                    onChange={e => setFormUseaprDay(e.target.value)}
+                    placeholder="예: 2012년 또는 1998년"
+                    style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 10px', color: 'white', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                </div>
               </div>
 
-              {/* ── 원터치 퀵 위치 특징 태그 ── */}
+              {/* 송수관 퀵 태그 */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 600 }}>원터치 위치 특징 태그 (탭하여 입력)</span>
+                <span style={{ fontSize: '12px', color: 'var(--brand-red)', fontWeight: 700 }}>송수관 위치 퀵 태그 (터치하여 자동 입력)</span>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                   {QUICK_TAGS.map((tag, idx) => (
                     <button
                       key={idx}
                       type="button"
-                      onClick={() => {
-                        setFieldNote(prev => prev ? `${prev}, ${tag}` : tag);
-                      }}
+                      onClick={() => setFormFieldNote(prev => prev ? `${prev}, ${tag}` : tag)}
                       style={{
-                        padding: '5px 10px',
-                        borderRadius: '100px',
-                        backgroundColor: 'rgba(255,255,255,0.06)',
-                        border: '1px solid rgba(255,255,255,0.15)',
-                        color: 'white',
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        cursor: 'pointer'
+                        padding: '4px 9px', borderRadius: '100px',
+                        backgroundColor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.2)',
+                        color: 'white', fontSize: '11px', fontWeight: 600, cursor: 'pointer'
                       }}
                       className="btn-hover-effect"
                     >
@@ -1538,25 +1173,44 @@ export default function MapComponent() {
               </div>
 
               {/* 현장 메모 */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', fontWeight: 600 }}>송수관 위치 특징 & 현장 특이사항 메모</label>
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>송수관 상세 위치 특징 & 현장 특이사항</label>
                 <textarea
-                  placeholder="예: 정문 우측 1m 화단 뒤쪽, 쌍구형(65mm), 야간 식별 주의 등"
-                  value={fieldNote}
-                  onChange={e => setFieldNote(e.target.value)}
-                  style={{ width: '100%', height: '70px', backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px', color: 'white', fontFamily: 'inherit', resize: 'none', boxSizing: 'border-box', fontSize: '13px' }}
+                  placeholder="예: 정문 우측 1m 화단 뒤쪽, 쌍구형(65mm), 가로수 가림으로 야간 식별 주의 등"
+                  value={formFieldNote}
+                  onChange={e => setFormFieldNote(e.target.value)}
+                  style={{ width: '100%', height: '65px', backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 10px', color: 'white', fontFamily: 'inherit', resize: 'none', boxSizing: 'border-box', fontSize: '12px' }}
                 />
               </div>
 
-              {/* 등록 버튼 */}
+              {/* 사진 업로드 3종 */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                <label style={{ height: '70px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', border: '1px dashed var(--border)', borderRadius: '10px', backgroundColor: photo1 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto1(e.target.files?.[0] ?? null)} />
+                  <Camera size={18} color={photo1 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
+                  <span style={{ fontSize: '10px', color: photo1 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: 600 }}>{photo1 ? '전경 선택됨' : '1. 전경 사진'}</span>
+                </label>
+                <label style={{ height: '70px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', border: '1px dashed var(--border)', borderRadius: '10px', backgroundColor: photo2 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto2(e.target.files?.[0] ?? null)} />
+                  <Camera size={18} color={photo2 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
+                  <span style={{ fontSize: '10px', color: photo2 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: 600 }}>{photo2 ? '상세 선택됨' : '2. 상세 사진'}</span>
+                </label>
+                <label style={{ height: '70px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', border: '1px dashed var(--border)', borderRadius: '10px', backgroundColor: photo3 ? 'rgba(255,42,42,0.1)' : 'var(--surface)', cursor: 'pointer' }}>
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setPhoto3(e.target.files?.[0] ?? null)} />
+                  <Camera size={18} color={photo3 ? 'var(--brand-red)' : 'var(--text-secondary)'} />
+                  <span style={{ fontSize: '10px', color: photo3 ? 'var(--brand-red)' : 'var(--text-secondary)', fontWeight: 600 }}>{photo3 ? '방면 캡쳐됨' : '3. 지도 방면'}</span>
+                </label>
+              </div>
+
+              {/* 저장 버튼 */}
               <button
                 className="btn-primary"
-                disabled={(!photo1 && !photo2 && !photo3) || isUploading}
-                style={{ height: '48px', fontSize: '15px', fontWeight: 700 }}
+                disabled={isUploading}
+                style={{ height: '46px', fontSize: '15px', fontWeight: 800 }}
                 onClick={async () => {
-                  if (!selectedLocation || (!photo1 && !photo2 && !photo3)) return;
-
+                  if (!selectedLocation) return;
                   setIsUploading(true);
+
                   try {
                     const uploadPromises = [];
                     let path1 = selectedLocation.photo1_path;
@@ -1570,7 +1224,6 @@ export default function MapComponent() {
                         supabase.storage.from('building-photos').upload(path1, photo1, { upsert: true, contentType: photo1.type || `image/${ext1}` })
                       );
                     }
-
                     if (photo2) {
                       const ext2 = photo2.name.split('.').pop()?.toLowerCase() || 'jpg';
                       path2 = `${selectedLocation.id}_2.${ext2}`;
@@ -1578,7 +1231,6 @@ export default function MapComponent() {
                         supabase.storage.from('building-photos').upload(path2, photo2, { upsert: true, contentType: photo2.type || `image/${ext2}` })
                       );
                     }
-
                     if (photo3) {
                       const ext3 = photo3.name.split('.').pop()?.toLowerCase() || 'jpg';
                       path3 = `${selectedLocation.id}_3.${ext3}`;
@@ -1592,50 +1244,67 @@ export default function MapComponent() {
                       if (res.error) throw new Error('사진 파일 업로드 실패: ' + res.error.message);
                     }
 
+                    const hasAnyPhoto = Boolean(path1 || path2 || path3 || selectedLocation.has_photos);
+
                     const saveData = {
                       id: selectedLocation.id,
-                      name: selectedLocation.originalName || selectedLocation.name,
-                      address: selectedLocation.originalAddress || selectedLocation.address,
+                      name: formName || selectedLocation.name,
+                      address: formRoadAddress || selectedLocation.address,
+                      road_address: formRoadAddress,
+                      jibun_address: formJibunAddress,
                       lat: selectedLocation.lat,
                       lng: selectedLocation.lng,
-                      floors: String(selectedLocation.floors || '?'),
-                      has_photos: true,
-                      field_note: fieldNote || selectedLocation.field_note || '',
+                      floors: formGrndFlr,
+                      ugrnd_flr: formUgrndFlr,
+                      totar: formTotar,
+                      useapr_day: formUseaprDay,
+                      structure: formStructure,
+                      purpose: formPurpose,
+                      has_photos: hasAnyPhoto,
+                      field_note: formFieldNote,
                       registered_at: new Date().toISOString(),
                       visited_at: new Date().toISOString(),
+                      user_edited_name: formName,
+                      user_edited_address: formRoadAddress,
+                      edited_by: deviceId.slice(0, 8),
+                      edited_at: new Date().toISOString(),
                       device_id: deviceId,
                       ...(path1 ? { photo1_path: path1 } : {}),
                       ...(path2 ? { photo2_path: path2 } : {}),
                       ...(path3 ? { photo3_path: path3 } : {})
                     };
 
-                    const { error: dbError } = await supabase
-                      .from('buildings')
-                      .upsert(saveData);
-
+                    const { error: dbError } = await supabase.from('buildings').upsert(saveData);
                     if (dbError) throw new Error('DB 저장 실패: ' + dbError.message);
 
                     const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
                     const ts = Date.now();
-                    setSelectedLocation((prev: any) => prev ? {
+                    setSelectedLocation((prev: any) => ({
                       ...prev,
-                      has_photos: true,
-                      field_note: fieldNote || prev.field_note,
+                      name: formName || prev.name,
+                      address: formRoadAddress || prev.address,
+                      road_address: formRoadAddress,
+                      jibun_address: formJibunAddress,
+                      floors: formGrndFlr,
+                      ugrnd_flr: formUgrndFlr,
+                      totar: formTotar,
+                      useapr_day: formUseaprDay,
+                      has_photos: hasAnyPhoto,
+                      field_note: formFieldNote,
                       photo1_path: path1,
                       photo2_path: path2,
                       photo3_path: path3,
                       photo1_url: path1 ? `${baseUrl}/storage/v1/object/public/building-photos/${path1}?t=${ts}` : prev.photo1_url,
                       photo2_url: path2 ? `${baseUrl}/storage/v1/object/public/building-photos/${path2}?t=${ts}` : prev.photo2_url,
                       photo3_url: path3 ? `${baseUrl}/storage/v1/object/public/building-photos/${path3}?t=${ts}` : prev.photo3_url,
-                    } : prev);
+                    }));
 
-                    setPhoto1(null); setPhoto2(null); setPhoto3(null); setFieldNote('');
-                    setShowUploadModal(false);
+                    setShowEditModal(false);
                     await fetchRegistry();
-                    alert('사진 및 현장 데이터가 성공적으로 등록되었습니다! 🚒');
+                    alert('현장 정보 및 송수관 제보가 성공적으로 저장되었습니다! 🚒');
                   } catch (err: any) {
-                    console.error('Upload error:', err);
-                    alert('업로드 실패: ' + (err.message || '알 수 없는 오류'));
+                    console.error('Save error:', err);
+                    alert('저장 실패: ' + (err.message || '알 수 없는 오류'));
                   } finally {
                     setIsUploading(false);
                   }
@@ -1643,13 +1312,11 @@ export default function MapComponent() {
               >
                 {isUploading ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
-                    <Loader2 size={18} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-                    <span>서버에 안전하게 저장 중...</span>
+                    <Loader2 size={16} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
+                    <span>저장 중...</span>
                   </div>
                 ) : (
-                  <span>
-                    데이터 등록 완료 {(!photo1 && !photo2 && !photo3) ? '(사진 최소 1장 필수)' : ''}
-                  </span>
+                  <span>현장 정보 저장 및 제보 완료</span>
                 )}
               </button>
             </div>
@@ -1660,73 +1327,51 @@ export default function MapComponent() {
       {/* ── Side Menu Drawer ── */}
       {showMenu && (
         <div style={{
-          position: 'fixed',
-          top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          backdropFilter: 'blur(2px)',
-          zIndex: 2000,
-          display: 'flex',
-          justifyContent: 'flex-end'
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(2px)', zIndex: 2000, display: 'flex', justifyContent: 'flex-end'
         }}>
           <div style={{ flex: 1 }} onClick={() => setShowMenu(false)}></div>
-          <div className="glass-panel" style={{ width: '280px', height: '100%', borderTop: 'none', borderLeft: '1px solid var(--border)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '32px' }}>
+          <div className="glass-panel" style={{ width: '280px', height: '100%', borderTop: 'none', borderLeft: '1px solid var(--border)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>메뉴</h2>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 800 }}>메뉴</h2>
               <button onClick={() => setShowMenu(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}>
-                <X size={24} />
+                <X size={22} />
               </button>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowUnregistered(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '12px', border: 'none', padding: '14px 12px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: 'rgba(255,42,42,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <AlertCircle size={18} color="var(--brand-red)" />
-                </div>
+              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowUnregistered(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '10px', border: 'none', padding: '12px 10px' }}>
+                <AlertCircle size={18} color="var(--brand-red)" />
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontWeight: 600, fontSize: '14px' }}>미등록 건물 현황</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>송수관 사진 미등록 건물 목록</div>
+                  <div style={{ fontWeight: 700, fontSize: '13px' }}>미등록 건물 현황</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>송수관 미등록 건물 목록</div>
                 </div>
               </button>
-              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowStats(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '12px', border: 'none', padding: '14px 12px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: 'rgba(255,42,42,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <History size={18} color="var(--brand-red)" />
-                </div>
+              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowStats(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '10px', border: 'none', padding: '12px 10px' }}>
+                <History size={18} color="var(--brand-red)" />
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontWeight: 600, fontSize: '14px' }}>내 기여 현황</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>등록 완료 건물 · 사진 통계</div>
+                  <div style={{ fontWeight: 700, fontSize: '13px' }}>내 기여 현황</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>등록 완료 건물 및 제보 통계</div>
                 </div>
               </button>
-              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowOffline(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '12px', border: 'none', padding: '14px 12px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: 'rgba(255,42,42,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <MapPinned size={18} color="var(--brand-red)" />
-                </div>
+              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowGuide(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '10px', border: 'none', padding: '12px 10px' }}>
+                <Camera size={18} color="var(--brand-red)" />
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontWeight: 600, fontSize: '14px' }}>오프라인 지도 다운로드</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>현장 인터넷 불가 시 대비</div>
+                  <div style={{ fontWeight: 700, fontSize: '13px' }}>송수관 촬영 가이드</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>올바른 촬영 기준 및 각도</div>
                 </div>
               </button>
-              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowGuide(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '12px', border: 'none', padding: '14px 12px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: 'rgba(255,42,42,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <Camera size={18} color="var(--brand-red)" />
-                </div>
+              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowStation(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '10px', border: 'none', padding: '12px 10px' }}>
+                <Info size={18} color="var(--brand-red)" />
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontWeight: 600, fontSize: '14px' }}>송수관 촬영 가이드</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>올바른 촬영 기준 및 각도 안내</div>
-                </div>
-              </button>
-              <button className="btn-secondary" onClick={() => { setShowMenu(false); setShowStation(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '12px', border: 'none', padding: '14px 12px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: 'rgba(255,42,42,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <Info size={18} color="var(--brand-red)" />
-                </div>
-                <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontWeight: 600, fontSize: '14px' }}>관할 소방서 정보</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>소속 소방서 연락처 · 관할 구역</div>
+                  <div style={{ fontWeight: 700, fontSize: '13px' }}>관할 소방서 연락처</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>서울시 25개 소방서 비상전화</div>
                 </div>
               </button>
             </div>
 
-            <div style={{ marginTop: 'auto', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>
-              Fire-Link: Seoul v1.3 (Official Registry Auto-Sync)
+            <div style={{ marginTop: 'auto', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '11px' }}>
+              Fire-Link: Seoul v1.4 (Tactical Field Edition)
             </div>
           </div>
         </div>
@@ -1736,31 +1381,24 @@ export default function MapComponent() {
       {showUnregistered && (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 3000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
           <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '80vh', overflowY: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <div>
-                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>미등록 건물 현황</h2>
-                <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {registry.filter(r => !r.has_photos).length > 0
-                    ? `방문한 건물 중 ${registry.filter(r => !r.has_photos).length}개 미등록`
-                    : '지도에서 건물을 클릭하면 여기에 표시됩니다'}
-                </p>
-              </div>
-              <button onClick={() => setShowUnregistered(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={24} /></button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 800 }}>미등록 건물 현황</h2>
+              <button onClick={() => setShowUnregistered(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={22} /></button>
             </div>
             {registry.filter(r => !r.has_photos).length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-secondary)' }}>
-                <AlertCircle size={40} style={{ marginBottom: '12px', opacity: 0.4 }} />
-                <p>아직 방문한 건물이 없습니다.<br />지도에서 건물을 클릭해 보세요.</p>
+              <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--text-secondary)' }}>
+                <AlertCircle size={36} style={{ marginBottom: '8px', opacity: 0.4 }} />
+                <p style={{ fontSize: '13px' }}>미등록 건물이 없습니다.</p>
               </div>
             ) : (
               registry.filter(r => !r.has_photos).map((b, i) => (
                 <div key={i} onClick={() => { setShowUnregistered(false); handleLocationSelect(b.lat, b.lng, true); }}
-                  style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', backgroundColor: 'var(--surface)', borderRadius: '12px', marginBottom: '8px', border: '1px solid var(--border)', cursor: 'pointer' }}>
+                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px', backgroundColor: 'var(--surface)', borderRadius: '10px', marginBottom: '8px', border: '1px solid var(--border)', cursor: 'pointer' }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: '14px' }}>{b.name}</div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>{b.address} · {b.floors}층</div>
+                    <div style={{ fontWeight: 700, fontSize: '13px' }}>{b.name}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{b.address}</div>
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--brand-red)', fontWeight: 600 }}>미등록</span>
+                  <span style={{ fontSize: '11px', color: 'var(--brand-red)', fontWeight: 700 }}>미등록</span>
                 </div>
               ))
             )}
@@ -1771,34 +1409,21 @@ export default function MapComponent() {
       {/* ── 내 기여 현황 모달 ── */}
       {showStats && (() => {
         const registered = registry.filter(r => r.has_photos);
-        const unregistered = registry.filter(r => !r.has_photos);
-        const thisMonth = registered.filter(r => r.registered_at && new Date(r.registered_at).getMonth() === new Date().getMonth());
-        const lastBuilding = registered.sort((a, b) => (b.registered_at ?? '').localeCompare(a.registered_at ?? ''))[0];
         return (
           <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 3000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
             <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>내 기여 현황</h2>
-                <button onClick={() => setShowStats(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={24} /></button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 800 }}>내 기여 현황</h2>
+                <button onClick={() => setShowStats(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={22} /></button>
               </div>
-              <p style={{ margin: '0 0 16px', fontSize: '11px', color: 'var(--text-secondary)' }}>기기 ID: {deviceId.slice(0, 8)}... (이 기기의 누적 데이터)</p>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-                {[
-                  { label: '등록 완료 건물', value: registered.length, unit: '개' },
-                  { label: '방문 건물', value: registry.length, unit: '개' },
-                  { label: '미등록 건물', value: unregistered.length, unit: '개' },
-                  { label: '이번 달 등록', value: thisMonth.length, unit: '건' },
-                ].map((s, i) => (
-                  <div key={i} style={{ backgroundColor: 'var(--surface)', borderRadius: '12px', padding: '16px', border: '1px solid var(--border)', textAlign: 'center' }}>
-                    <div style={{ fontSize: '28px', fontWeight: 700, color: 'var(--brand-red)' }}>{s.value}<span style={{ fontSize: '14px' }}>{s.unit}</span></div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{s.label}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ backgroundColor: 'var(--surface)', borderRadius: '12px', padding: '14px', border: '1px solid var(--border)' }}>
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>최근 등록 건물</div>
-                <div style={{ fontSize: '14px', fontWeight: 600, marginTop: '4px' }}>
-                  {lastBuilding ? `${new Date(lastBuilding.registered_at!).toLocaleDateString('ko-KR')} — ${lastBuilding.name}` : '등록한 건물 없음'}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ backgroundColor: 'var(--surface)', borderRadius: '12px', padding: '16px', textAlign: 'center', border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: '26px', fontWeight: 800, color: '#00e676' }}>{registered.length}개</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>등록 완료 건물</div>
+                </div>
+                <div style={{ backgroundColor: 'var(--surface)', borderRadius: '12px', padding: '16px', textAlign: 'center', border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: '26px', fontWeight: 800, color: 'var(--brand-red)' }}>{registry.length}개</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>전체 관리 건물</div>
                 </div>
               </div>
             </div>
@@ -1806,65 +1431,24 @@ export default function MapComponent() {
         );
       })()}
 
-      {/* ── 오프라인 지도 다운로드 모달 ── */}
-      {showOffline && (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 3000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-          <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>오프라인 지도 다운로드</h2>
-              <button onClick={() => setShowOffline(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={24} /></button>
-            </div>
-            <div style={{ backgroundColor: 'var(--surface)', borderRadius: '12px', padding: '16px', border: '1px solid var(--border)', marginBottom: '16px' }}>
-              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>다운로드 구역</div>
-              <div style={{ fontWeight: 600 }}>서울특별시 전체 (25개 자치구)</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>예상 용량: 약 340MB</div>
-            </div>
-            {offlineDownloading ? (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
-                  <span>다운로드 중...</span><span style={{ color: 'var(--brand-red)', fontWeight: 700 }}>{offlineProgress}%</span>
-                </div>
-                <div style={{ backgroundColor: 'var(--surface)', borderRadius: '100px', height: '8px', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${offlineProgress}%`, backgroundColor: 'var(--brand-red)', borderRadius: '100px', transition: 'width 0.3s' }} />
-                </div>
-              </div>
-            ) : (
-              <button className="btn-primary" style={{ width: '100%' }} onClick={() => {
-                setOfflineDownloading(true);
-                setOfflineProgress(0);
-                let p = 0;
-                const t = setInterval(() => {
-                  p += Math.floor(Math.random() * 8) + 3;
-                  if (p >= 100) { p = 100; clearInterval(t); setOfflineDownloading(false); setOfflineProgress(0); setShowOffline(false); }
-                  setOfflineProgress(p);
-                }, 200);
-              }}>
-                <MapPinned size={18} /><span>다운로드 시작</span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── 송수관 촬영 가이드 모달 ── */}
+      {/* ── 송수관 촬영 가이드 ── */}
       {showGuide && (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 3000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-          <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '85vh', overflowY: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>송수관 촬영 가이드</h2>
-              <button onClick={() => setShowGuide(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={24} /></button>
+          <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '80vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 800 }}>송수관 촬영 가이드</h2>
+              <button onClick={() => setShowGuide(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={22} /></button>
             </div>
             {[
-              { step: '01', title: '전경 사진 (원거리)', desc: '건물 정면에서 5~10m 거리. 건물 입구와 송수관 위치가 함께 보이도록 촬영. 주간 자연광 권장.' },
-              { step: '02', title: '상세 사진 (근거리)', desc: '송수관에서 1m 이내 접근. 연결구 구경, 잠금장치, 표지판이 모두 선명하게 보여야 함.' },
-              { step: '03', title: '야간 보완 촬영', desc: '나무·차량으로 가려진 경우, 야간 가시성 확인용 추가 촬영. 플래시 사용 가능.' },
-              { step: '04', title: '현장 메모 작성', desc: '위치 설명 필수 (예: 정문 왼쪽 1m, 지하주차장 입구 화단 옆). 장애물·식별 주의사항 기재.' },
+              { step: '01', title: '전경 사진 (원거리)', desc: '건물 정면 5~10m 거리. 건물 입구와 송수관 위치가 함께 보이도록 촬영.' },
+              { step: '02', title: '상세 사진 (근거리)', desc: '송수관 1m 이내 접근. 연결구 구경, 잠금장치, 표지판이 선명해야 함.' },
+              { step: '03', title: '지도 방면 캡쳐', desc: '지도를 캡쳐하여 송수관이 건물의 어느 방면(동/서/남/북)에 있는지 표시.' },
             ].map((g, i) => (
-              <div key={i} style={{ display: 'flex', gap: '14px', marginBottom: '16px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: 'var(--brand-red)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '13px', fontWeight: 700 }}>{g.step}</div>
-                <div style={{ backgroundColor: 'var(--surface)', borderRadius: '12px', padding: '14px', border: '1px solid var(--border)', flex: 1 }}>
-                  <div style={{ fontWeight: 600, marginBottom: '6px' }}>{g.title}</div>
-                  <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{g.desc}</div>
+              <div key={i} style={{ display: 'flex', gap: '12px', marginBottom: '14px' }}>
+                <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'var(--brand-red)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '12px', fontWeight: 800 }}>{g.step}</div>
+                <div style={{ backgroundColor: 'var(--surface)', borderRadius: '10px', padding: '12px', border: '1px solid var(--border)', flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '4px' }}>{g.title}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{g.desc}</div>
                 </div>
               </div>
             ))}
@@ -1872,40 +1456,31 @@ export default function MapComponent() {
         </div>
       )}
 
-      {/* ── 관할 소방서 정보 모달 ── */}
+      {/* ── 관할 소방서 정보 ── */}
       {showStation && (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 3000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
           <div className="glass-panel" style={{ padding: '24px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', maxHeight: '80vh', overflowY: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>관할 소방서 정보</h2>
-              <button onClick={() => setShowStation(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={24} /></button>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,42,42,0.1)', borderRadius: '12px', padding: '12px 16px', border: '1px solid rgba(255,42,42,0.3)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <AlertCircle size={18} color="var(--brand-red)" />
-              <span style={{ fontSize: '13px', fontWeight: 600 }}>긴급출동 ☎ 119</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 800 }}>관할 소방서 연락처</h2>
+              <button onClick={() => setShowStation(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}><X size={22} /></button>
             </div>
             {[
-              { name: '종로소방서', area: '종로구', tel: '02-737-0119', addr: '종로구 자하문로 19' },
-              { name: '중부소방서', area: '중구', tel: '02-3705-0119', addr: '중구 퇴계로 34길 42' },
-              { name: '서대문소방서', area: '서대문구', tel: '02-330-4119', addr: '서대문구 연희로 248' },
-              { name: '마포소방서', area: '마포구', tel: '02-320-9119', addr: '마포구 월드컵로 190' },
-              { name: '영등포소방서', area: '영등포구', tel: '02-2637-0119', addr: '영등포구 영등포로 369' },
-              { name: '구로소방서', area: '구로구, 금천구', tel: '02-2618-0119', addr: '구로구 경인로 625' },
-              { name: '동작소방서', area: '동작구', tel: '02-599-0119', addr: '동작구 노량진로 129' },
-              { name: '성동소방서', area: '성동구', tel: '02-2291-0119', addr: '성동구 왕십리로 410' },
+              { name: '종로소방서', tel: '02-737-0119' },
+              { name: '중부소방서', tel: '02-3705-0119' },
+              { name: '마포소방서', tel: '02-320-9119' },
+              { name: '영등포소방서', tel: '02-2637-0119' },
+              { name: '구로소방서', tel: '02-2618-0119' },
+              { name: '강남소방서', tel: '02-554-0119' }
             ].map((s, i) => (
-              <div key={i} style={{ backgroundColor: 'var(--surface)', borderRadius: '12px', padding: '16px', border: '1px solid var(--border)', marginBottom: '8px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                  <div style={{ fontWeight: 700, fontSize: '15px' }}>{s.name}</div>
-                  <a href={`tel:${s.tel}`} style={{ backgroundColor: 'var(--brand-red)', color: 'white', padding: '4px 10px', borderRadius: '100px', fontSize: '12px', fontWeight: 600, textDecoration: 'none' }}>{s.tel}</a>
-                </div>
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>관할: {s.area}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>{s.addr}</div>
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', backgroundColor: 'var(--surface)', borderRadius: '10px', marginBottom: '8px', border: '1px solid var(--border)' }}>
+                <span style={{ fontWeight: 700, fontSize: '14px' }}>{s.name}</span>
+                <a href={`tel:${s.tel}`} style={{ backgroundColor: 'var(--brand-red)', color: 'white', padding: '4px 10px', borderRadius: '100px', fontSize: '12px', fontWeight: 700, textDecoration: 'none' }}>{s.tel}</a>
               </div>
             ))}
           </div>
         </div>
       )}
+
     </div>
   );
 }
